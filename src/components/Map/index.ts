@@ -1,0 +1,1 @@
+export { FranceMap } from './FranceMap';

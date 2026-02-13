@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:api.gouv.fr)",
+      "WebFetch(domain:francetravail.io)",
+      "WebFetch(domain:donneespubliques.meteofrance.fr)",
+      "WebFetch(domain:app.dvf.etalab.gouv.fr)"
+    ]
+  }
+}
