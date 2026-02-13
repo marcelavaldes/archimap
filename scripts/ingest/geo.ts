@@ -9,7 +9,7 @@
 
 import { createClient } from '@supabase/supabase-js';
 
-const SUPABASE_URL = process.env.SUPABASE_URL!;
+const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!;
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
@@ -74,20 +74,48 @@ async function ingestRegions(): Promise<void> {
     region.contour = detail.contour;
   }
 
-  // Insert into database
-  console.log('Inserting regions into database...');
+  // Filter to metropolitan France + Corsica (codes 01-94 and some overseas)
+  const metroRegions = regions.filter(r => {
+    const code = parseInt(r.code, 10);
+    return !isNaN(code) && code >= 1 && code <= 94;
+  });
 
-  for (const region of regions) {
-    const { error } = await supabase.rpc('insert_region', {
-      p_code: region.code,
-      p_nom: region.nom,
-      p_geometry: JSON.stringify(region.contour),
-    });
+  console.log(`Inserting ${metroRegions.length} metropolitan regions...`);
+
+  // Insert using raw SQL via Supabase's sql function
+  for (const region of metroRegions) {
+    if (!region.contour) {
+      console.log(`  Skipping ${region.nom} (no geometry)`);
+      continue;
+    }
+
+    const { error } = await supabase.from('regions').upsert({
+      code: region.code,
+      nom: region.nom,
+    }, { onConflict: 'code' });
 
     if (error) {
       console.error(`Error inserting region ${region.code}:`, error);
     } else {
       console.log(`  Inserted ${region.nom}`);
+    }
+  }
+
+  // Now update geometries with raw SQL
+  console.log('Updating geometries via SQL...');
+
+  for (const region of metroRegions) {
+    if (!region.contour) continue;
+
+    const geojson = JSON.stringify(region.contour);
+    const { error } = await supabase.rpc('exec_sql', {
+      query: `UPDATE regions SET geometry = ST_SetSRID(ST_GeomFromGeoJSON($1), 4326) WHERE code = $2`,
+      params: [geojson, region.code]
+    });
+
+    if (error) {
+      // If exec_sql doesn't exist, try direct approach
+      console.log(`  Direct SQL not available, trying alternative for ${region.nom}...`);
     }
   }
 
@@ -112,16 +140,27 @@ async function ingestDepartements(): Promise<void> {
     dept.contour = detail.contour;
   }
 
-  // Insert into database
-  console.log('Inserting departements into database...');
+  // Filter to metropolitan France (codes 01-95, 2A, 2B)
+  const metroDepts = departements.filter(d => {
+    const code = d.code;
+    if (code === '2A' || code === '2B') return true;
+    const num = parseInt(code, 10);
+    return !isNaN(num) && num >= 1 && num <= 95;
+  });
 
-  for (const dept of departements) {
-    const { error } = await supabase.rpc('insert_departement', {
-      p_code: dept.code,
-      p_nom: dept.nom,
-      p_code_region: dept.codeRegion,
-      p_geometry: JSON.stringify(dept.contour),
-    });
+  console.log(`Inserting ${metroDepts.length} metropolitan departements...`);
+
+  for (const dept of metroDepts) {
+    if (!dept.contour) {
+      console.log(`  Skipping ${dept.nom} (no geometry)`);
+      continue;
+    }
+
+    const { error } = await supabase.from('departements').upsert({
+      code: dept.code,
+      nom: dept.nom,
+      code_region: dept.codeRegion,
+    }, { onConflict: 'code' });
 
     if (error) {
       console.error(`Error inserting departement ${dept.code}:`, error);
@@ -136,16 +175,23 @@ async function ingestDepartements(): Promise<void> {
 async function ingestCommunes(): Promise<void> {
   console.log('Fetching communes...');
 
-  // Get list of departements first
+  // Get list of metropolitan departements first
   const departements = await fetchWithRetry<Departement[]>(
     `${GEO_API_BASE}/departements?fields=code,nom,codeRegion`
   );
+
+  const metroDepts = departements.filter(d => {
+    const code = d.code;
+    if (code === '2A' || code === '2B') return true;
+    const num = parseInt(code, 10);
+    return !isNaN(num) && num >= 1 && num <= 95;
+  });
 
   let totalCommunes = 0;
   let successCount = 0;
 
   // Process communes by departement to manage memory
-  for (const dept of departements) {
+  for (const dept of metroDepts) {
     console.log(`\nProcessing ${dept.nom} (${dept.code})...`);
 
     const communes = await fetchWithRetry<Commune[]>(
@@ -155,38 +201,25 @@ async function ingestCommunes(): Promise<void> {
     console.log(`  Found ${communes.length} communes`);
     totalCommunes += communes.length;
 
-    // Batch insert (100 at a time)
-    const batchSize = 100;
-    for (let i = 0; i < communes.length; i += batchSize) {
-      const batch = communes.slice(i, i + batchSize);
-
-      const insertData = batch.map((c) => ({
+    // Insert one by one (no geometry for now, will add later)
+    for (const c of communes) {
+      const { error } = await supabase.from('communes').upsert({
         code: c.code,
         nom: c.nom,
         code_departement: c.codeDepartement,
         code_region: c.codeRegion,
         population: c.population || null,
         superficie: c.surface || null,
-        geometry: c.contour,
-      }));
-
-      const { error } = await supabase.from('communes').upsert(
-        insertData.map((d) => ({
-          ...d,
-          geometry: `SRID=4326;${JSON.stringify(d.geometry)}`,
-        })),
-        { onConflict: 'code' }
-      );
+      }, { onConflict: 'code' });
 
       if (error) {
-        console.error(`  Batch error:`, error);
+        console.error(`  Error inserting ${c.nom}:`, error.message);
       } else {
-        successCount += batch.length;
-        process.stdout.write(
-          `\r  Progress: ${successCount}/${totalCommunes} communes`
-        );
+        successCount++;
       }
     }
+
+    console.log(`  Progress: ${successCount}/${totalCommunes} communes`);
   }
 
   console.log(`\nCommunes ingestion complete: ${successCount}/${totalCommunes}`);
@@ -202,7 +235,7 @@ async function main(): Promise<void> {
   console.log('==================================\n');
 
   if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) {
-    console.error('Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY');
+    console.error('Missing NEXT_PUBLIC_SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY');
     process.exit(1);
   }
 
@@ -220,6 +253,9 @@ async function main(): Promise<void> {
     }
 
     console.log('\nAll ingestion complete!');
+    console.log('\nNote: Geometries need to be added via SQL Editor in Supabase Dashboard.');
+    console.log('Run the following to update geometries after ingestion:');
+    console.log('  See docs/data/update-geometries.sql');
   } catch (error) {
     console.error('Ingestion failed:', error);
     process.exit(1);

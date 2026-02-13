@@ -1,6 +1,9 @@
 -- Insert functions for data ingestion
 -- These allow inserting geometries from GeoJSON strings
 
+-- Set search_path for PostGIS functions
+SET search_path TO public, extensions;
+
 CREATE OR REPLACE FUNCTION insert_region(
   p_code VARCHAR(3),
   p_nom VARCHAR(100),

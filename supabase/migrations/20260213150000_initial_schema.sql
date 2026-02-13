@@ -1,9 +1,12 @@
 -- ArchiMap Initial Schema
 -- PostgreSQL with PostGIS extension
 
+-- Add extensions schema to search path for PostGIS types
+SET search_path TO public, extensions;
+
 -- Enable extensions
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
-CREATE EXTENSION IF NOT EXISTS "postgis";
+CREATE EXTENSION IF NOT EXISTS "postgis" SCHEMA extensions;
 
 -- ============================================
 -- GEOGRAPHIC TABLES
