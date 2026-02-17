@@ -44,6 +44,7 @@ export default function Home() {
           <FranceMap
             darkMode={darkMode}
             onMapLoad={handleMapLoad}
+            selectedCriterion={selectedCriterion}
           />
 
           {/* Active layers indicator */}
