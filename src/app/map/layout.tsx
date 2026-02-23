@@ -79,9 +79,10 @@ export default function MapLayout({ children }: { children: ReactNode }) {
               </div>
             )}
 
-            {/* Map status */}
+            {/* Map status + Build version */}
             <div className="absolute bottom-4 right-4 bg-background/90 backdrop-blur-sm border border-border rounded-lg px-3 py-2 text-xs text-muted-foreground z-30">
-              {map ? 'Carte prête' : 'Initialisation...'}
+              <div>{map ? 'Carte prête' : 'Initialisation...'}</div>
+              <div className="text-[10px] opacity-60 mt-1">Build: 2026-02-23 22:45 UTC</div>
             </div>
           </main>
         </div>
