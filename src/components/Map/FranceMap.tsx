@@ -11,36 +11,86 @@ import { DetailPanel } from './DetailPanel';
 import { Breadcrumb, BreadcrumbItem } from './Breadcrumb';
 import { Legend } from './Legend';
 
+type AdminLevelPlural = 'regions' | 'departements' | 'communes';
+
+interface InitialLocation {
+  code: string;
+  nom: string;
+  population?: number | null;
+}
+
 interface FranceMapProps {
   darkMode?: boolean;
   onMapLoad?: (map: Map) => void;
   className?: string;
   selectedCriterion?: string | null;
+  // URL-based navigation props
+  initialLevel?: AdminLevelPlural;
+  initialRegion?: InitialLocation;
+  initialDepartment?: InitialLocation;
+  initialCommune?: InitialLocation;
+  showDetailPanel?: boolean;
+  onNavigate?: (level: 'region' | 'departement' | 'commune', code: string) => void;
 }
 
-type AdminLevelPlural = 'regions' | 'departements' | 'communes';
-
-export function FranceMap({ darkMode = false, onMapLoad, className = '', selectedCriterion = null }: FranceMapProps) {
+export function FranceMap({
+  darkMode = false,
+  onMapLoad,
+  className = '',
+  selectedCriterion = null,
+  initialLevel = 'regions',
+  initialRegion,
+  initialDepartment,
+  initialCommune,
+  showDetailPanel: initialShowDetailPanel = false,
+  onNavigate,
+}: FranceMapProps) {
   const mapContainer = useRef<HTMLDivElement>(null);
   const map = useRef<Map | null>(null);
   const [isLoaded, setIsLoaded] = useState(false);
-  const [currentLevel, setCurrentLevel] = useState<AdminLevelPlural>('regions');
+  const [currentLevel, setCurrentLevel] = useState<AdminLevelPlural>(initialLevel);
   const hoveredFeatureId = useRef<string | number | null>(null);
+  const initialNavigationDone = useRef(false);
 
   // Track current parent code for navigation
-  const currentParentCode = useRef<string | null>(null);
+  const currentParentCode = useRef<string | null>(
+    initialDepartment?.code || initialRegion?.code || null
+  );
 
   // Tooltip state
   const [tooltipFeature, setTooltipFeature] = useState<GeoFeatureProperties | null>(null);
   const [tooltipPosition, setTooltipPosition] = useState({ x: 0, y: 0 });
 
-  // Detail panel state
-  const [selectedFeature, setSelectedFeature] = useState<GeoFeatureProperties | null>(null);
+  // Detail panel state - initialize with commune if provided
+  const [selectedFeature, setSelectedFeature] = useState<GeoFeatureProperties | null>(
+    initialCommune && initialShowDetailPanel
+      ? {
+          id: initialCommune.code,
+          code: initialCommune.code,
+          nom: initialCommune.nom,
+          level: 'commune' as AdminLevel,
+          population: initialCommune.population ?? undefined,
+        }
+      : null
+  );
+
+  // Build initial breadcrumb from props
+  const buildInitialBreadcrumb = (): BreadcrumbItem[] => {
+    const items: BreadcrumbItem[] = [{ level: 'france', nom: 'France' }];
+    if (initialRegion) {
+      items.push({ level: 'region', code: initialRegion.code, nom: initialRegion.nom });
+    }
+    if (initialDepartment) {
+      items.push({ level: 'departement', code: initialDepartment.code, nom: initialDepartment.nom });
+    }
+    if (initialCommune) {
+      items.push({ level: 'commune', code: initialCommune.code, nom: initialCommune.nom });
+    }
+    return items;
+  };
 
   // Navigation state
-  const [breadcrumb, setBreadcrumb] = useState<BreadcrumbItem[]>([
-    { level: 'france', nom: 'France' }
-  ]);
+  const [breadcrumb, setBreadcrumb] = useState<BreadcrumbItem[]>(buildInitialBreadcrumb);
 
   // Fetch GeoJSON data from API
   const fetchGeoJSON = useCallback(async (
@@ -319,6 +369,12 @@ export function FranceMap({ darkMode = false, onMapLoad, className = '', selecte
 
     const { level, code, nom } = feature;
 
+    // If onNavigate is provided, use URL-based navigation
+    if (onNavigate && level !== 'commune') {
+      onNavigate(level as 'region' | 'departement', code);
+      return;
+    }
+
     if (level === 'region') {
       // Zoom to region and load departements for this region
       zoomToFeature(code, 'regions-source');
@@ -346,10 +402,14 @@ export function FranceMap({ darkMode = false, onMapLoad, className = '', selecte
       setCurrentLevel('communes');
       updateGeoJSONLayer('communes', selectedCriterion, code);
     } else if (level === 'commune') {
-      // Open detail panel
-      setSelectedFeature(feature);
+      // For communes, navigate via URL if available, otherwise open detail panel
+      if (onNavigate) {
+        onNavigate('commune', code);
+      } else {
+        setSelectedFeature(feature);
+      }
     }
-  }, [getFeatureAtPoint, zoomToFeature, selectedCriterion, updateGeoJSONLayer]);
+  }, [getFeatureAtPoint, zoomToFeature, selectedCriterion, updateGeoJSONLayer, onNavigate]);
 
   // Handle breadcrumb navigation
   const handleBreadcrumbNavigate = useCallback((index: number) => {
@@ -452,11 +512,34 @@ export function FranceMap({ darkMode = false, onMapLoad, className = '', selecte
     map.current.on('load', async () => {
       setIsLoaded(true);
 
-      // Load initial regions layer
-      await updateGeoJSONLayer('regions', selectedCriterion);
+      // Load the appropriate layer based on initial navigation state
+      if (initialDepartment) {
+        // Load communes for the department
+        await updateGeoJSONLayer('communes', selectedCriterion, initialDepartment.code);
+      } else if (initialRegion) {
+        // Load departements for the region
+        await updateGeoJSONLayer('departements', selectedCriterion, initialRegion.code);
+      } else {
+        // Load initial regions layer
+        await updateGeoJSONLayer('regions', selectedCriterion);
+      }
 
       if (onMapLoad && map.current) {
         onMapLoad(map.current);
+      }
+
+      // Zoom to initial location after data loads
+      if (!initialNavigationDone.current) {
+        initialNavigationDone.current = true;
+        setTimeout(() => {
+          if (initialDepartment && map.current) {
+            // Zoom to department
+            zoomToFeature(initialDepartment.code, 'communes-source');
+          } else if (initialRegion && map.current) {
+            // Zoom to region
+            zoomToFeature(initialRegion.code, 'departements-source');
+          }
+        }, 500);
       }
     });
 

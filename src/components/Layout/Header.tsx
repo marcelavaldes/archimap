@@ -1,6 +1,7 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, Suspense } from 'react';
+import { SearchBar } from '@/components/Search';
 
 interface HeaderProps {
   onDarkModeToggle?: (isDark: boolean) => void;
@@ -17,17 +18,26 @@ export function Header({ onDarkModeToggle }: HeaderProps) {
   };
 
   return (
-    <header className="flex items-center justify-between px-4 py-3 border-b border-border bg-background">
-      <div className="flex items-center gap-3">
+    <header className="flex items-center justify-between px-4 py-3 border-b border-border bg-background gap-4">
+      <div className="flex items-center gap-3 flex-shrink-0">
         <h1 className="text-xl font-semibold tracking-tight">
           ArchiMap
         </h1>
-        <span className="text-xs text-muted-foreground px-2 py-0.5 rounded bg-secondary">
+        <span className="text-xs text-muted-foreground px-2 py-0.5 rounded bg-secondary hidden sm:inline">
           France
         </span>
       </div>
 
-      <div className="flex items-center gap-4">
+      {/* Search Bar - wrapped in Suspense for useSearchParams */}
+      <div className="flex-1 max-w-md">
+        <Suspense fallback={
+          <div className="w-full h-9 bg-secondary/50 rounded-lg animate-pulse" />
+        }>
+          <SearchBar />
+        </Suspense>
+      </div>
+
+      <div className="flex items-center gap-4 flex-shrink-0">
         <button
           onClick={toggleDarkMode}
           className="p-2 rounded-lg hover:bg-secondary transition-colors"
