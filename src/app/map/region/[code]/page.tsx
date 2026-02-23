@@ -1,5 +1,4 @@
 import { Metadata } from 'next';
-import { notFound } from 'next/navigation';
 import { MapView } from '@/components/Map/MapView';
 import { createClient } from '@/lib/supabase/server';
 
@@ -29,24 +28,7 @@ export async function generateMetadata({ params }: PageProps): Promise<Metadata>
   };
 }
 
-export default async function RegionPage({ params }: PageProps) {
-  const { code } = await params;
-  const supabase = await createClient();
-
-  const { data: region } = await supabase
-    .from('regions')
-    .select('code, nom')
-    .eq('code', code)
-    .single();
-
-  if (!region) {
-    notFound();
-  }
-
-  return (
-    <MapView
-      initialLevel="departements"
-      initialRegion={{ code: region.code, nom: region.nom }}
-    />
-  );
+export default function RegionPage() {
+  // For now, just show the basic map - deep linking will be added later
+  return <MapView />;
 }
