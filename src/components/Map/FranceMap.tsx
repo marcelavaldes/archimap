@@ -112,14 +112,19 @@ export function FranceMap({
       }
 
       const url = `/api/geo/${level}${params.toString() ? `?${params.toString()}` : ''}`;
+      console.log(`[FranceMap] Fetching GeoJSON: ${url}`);
+
       const response = await fetch(url);
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
+        console.error(`[FranceMap] API error for ${level}:`, response.status, errorData);
         throw new Error(errorData.error || `Failed to fetch ${level} data`);
       }
-      return await response.json();
+      const data = await response.json();
+      console.log(`[FranceMap] Fetched ${level}: ${data.features?.length || 0} features`);
+      return data;
     } catch (error) {
-      console.error(`Error fetching ${level}:`, error);
+      console.error(`[FranceMap] Error fetching ${level}:`, error);
       return null;
     }
   }, []);
@@ -228,7 +233,13 @@ export function FranceMap({
     criterionId?: string | null,
     parentCode?: string | null
   ) => {
-    if (!map.current) return;
+    console.log(`[FranceMap] updateGeoJSONLayer called: level=${level}, criterion=${criterionId}, parent=${parentCode}`);
+    console.log(`[FranceMap] map.current exists: ${!!map.current}`);
+
+    if (!map.current) {
+      console.error('[FranceMap] updateGeoJSONLayer: map.current is null!');
+      return;
+    }
 
     // Update current parent code
     if (parentCode !== undefined) {
@@ -237,7 +248,11 @@ export function FranceMap({
 
     // For communes, require parent code (departement) to prevent timeout
     const geojson = await fetchGeoJSON(level, criterionId, level === 'communes' ? (parentCode ?? currentParentCode.current) : parentCode);
-    if (!geojson) return;
+    if (!geojson) {
+      console.error('[FranceMap] updateGeoJSONLayer: No GeoJSON data received');
+      return;
+    }
+    console.log(`[FranceMap] GeoJSON received: ${geojson.features?.length} features`);
 
     const sourceId = `${level}-source`;
     const layerId = `${level}-fill`;
@@ -259,6 +274,7 @@ export function FranceMap({
     }
 
     // Add source
+    console.log(`[FranceMap] Adding source: ${sourceId}`);
     map.current.addSource(sourceId, {
       type: 'geojson',
       data: geojson,
@@ -266,6 +282,7 @@ export function FranceMap({
     });
 
     // Add fill layer with choropleth coloring
+    console.log(`[FranceMap] Adding fill layer: ${layerId}, minzoom: ${ZOOM_THRESHOLDS[level].min}, maxzoom: ${ZOOM_THRESHOLDS[level].max}`);
     map.current.addLayer({
       id: layerId,
       type: 'fill',
@@ -277,6 +294,7 @@ export function FranceMap({
       minzoom: ZOOM_THRESHOLDS[level].min,
       maxzoom: ZOOM_THRESHOLDS[level].max,
     });
+    console.log(`[FranceMap] Layer ${layerId} added successfully`);
 
     // Add line layer for boundaries
     map.current.addLayer({
@@ -487,9 +505,16 @@ export function FranceMap({
 
   // Initialize map
   useEffect(() => {
-    if (!mapContainer.current || map.current) return;
+    console.log('[FranceMap] Map init useEffect running');
+    console.log(`[FranceMap] mapContainer.current: ${!!mapContainer.current}, map.current: ${!!map.current}`);
+
+    if (!mapContainer.current || map.current) {
+      console.log('[FranceMap] Skipping map init - already exists or no container');
+      return;
+    }
 
     const style = darkMode ? DARK_MAP_STYLE : BASE_MAP_STYLE;
+    console.log('[FranceMap] Creating map with style:', style.name);
 
     map.current = new maplibregl.Map({
       container: mapContainer.current,
@@ -510,10 +535,16 @@ export function FranceMap({
     );
 
     map.current.on('load', () => {
+      console.log('[FranceMap] Map "load" event fired');
+      console.log(`[FranceMap] Map zoom: ${map.current?.getZoom()}, center: ${map.current?.getCenter()}`);
       setIsLoaded(true);
       if (onMapLoad && map.current) {
         onMapLoad(map.current);
       }
+    });
+
+    map.current.on('error', (e) => {
+      console.error('[FranceMap] Map error:', e);
     });
 
     // Listen for zoom changes
@@ -529,32 +560,48 @@ export function FranceMap({
 
   // Load initial layer when map becomes ready
   useEffect(() => {
-    if (!map.current || !isLoaded) return;
-    if (initialNavigationDone.current) return; // Only run once
+    console.log(`[FranceMap] Initial layer useEffect: isLoaded=${isLoaded}, map.current=${!!map.current}, initialNavigationDone=${initialNavigationDone.current}`);
+
+    if (!map.current || !isLoaded) {
+      console.log('[FranceMap] Skipping initial layer load - map not ready');
+      return;
+    }
+    if (initialNavigationDone.current) {
+      console.log('[FranceMap] Skipping initial layer load - already done');
+      return;
+    }
 
     initialNavigationDone.current = true;
+    console.log('[FranceMap] Loading initial layer...');
 
     const loadInitialLayer = async () => {
-      // Load the appropriate layer based on initial navigation state
-      if (initialDepartment) {
-        await updateGeoJSONLayer('communes', selectedCriterion, initialDepartment.code);
-        // Zoom to department after layer loads
-        setTimeout(() => {
-          if (map.current) {
-            zoomToFeature(initialDepartment.code, 'communes-source');
-          }
-        }, 500);
-      } else if (initialRegion) {
-        await updateGeoJSONLayer('departements', selectedCriterion, initialRegion.code);
-        // Zoom to region after layer loads
-        setTimeout(() => {
-          if (map.current) {
-            zoomToFeature(initialRegion.code, 'departements-source');
-          }
-        }, 500);
-      } else {
-        // Load initial regions layer
-        await updateGeoJSONLayer('regions', selectedCriterion);
+      try {
+        // Load the appropriate layer based on initial navigation state
+        if (initialDepartment) {
+          console.log(`[FranceMap] Loading communes for department: ${initialDepartment.code}`);
+          await updateGeoJSONLayer('communes', selectedCriterion, initialDepartment.code);
+          // Zoom to department after layer loads
+          setTimeout(() => {
+            if (map.current) {
+              zoomToFeature(initialDepartment.code, 'communes-source');
+            }
+          }, 500);
+        } else if (initialRegion) {
+          console.log(`[FranceMap] Loading departements for region: ${initialRegion.code}`);
+          await updateGeoJSONLayer('departements', selectedCriterion, initialRegion.code);
+          // Zoom to region after layer loads
+          setTimeout(() => {
+            if (map.current) {
+              zoomToFeature(initialRegion.code, 'departements-source');
+            }
+          }, 500);
+        } else {
+          console.log('[FranceMap] Loading regions (default)');
+          await updateGeoJSONLayer('regions', selectedCriterion);
+        }
+        console.log('[FranceMap] Initial layer loaded successfully');
+      } catch (error) {
+        console.error('[FranceMap] Error loading initial layer:', error);
       }
     };
 
@@ -620,10 +667,12 @@ export function FranceMap({
         </div>
       )}
 
-      {/* Current level indicator */}
+      {/* Debug info - current level and state */}
       {isLoaded && (
-        <div className="absolute top-20 left-4 bg-background/90 backdrop-blur-sm px-3 py-2 rounded-md shadow-md text-sm z-10">
-          <span className="font-medium">Niveau:</span> {currentLevel}
+        <div className="absolute top-20 left-4 bg-background/90 backdrop-blur-sm px-3 py-2 rounded-md shadow-md text-xs z-10 space-y-1">
+          <div><span className="font-medium">Niveau:</span> {currentLevel}</div>
+          <div><span className="font-medium">Map:</span> {map.current ? 'OK' : 'NULL'}</div>
+          <div><span className="font-medium">Loaded:</span> {isLoaded ? 'Yes' : 'No'}</div>
         </div>
       )}
 
