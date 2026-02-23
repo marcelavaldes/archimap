@@ -27,6 +27,9 @@ export function FranceMap({ darkMode = false, onMapLoad, className = '', selecte
   const [currentLevel, setCurrentLevel] = useState<AdminLevelPlural>('regions');
   const hoveredFeatureId = useRef<string | number | null>(null);
 
+  // Track current parent code for navigation
+  const currentParentCode = useRef<string | null>(null);
+
   // Tooltip state
   const [tooltipFeature, setTooltipFeature] = useState<GeoFeatureProperties | null>(null);
   const [tooltipPosition, setTooltipPosition] = useState({ x: 0, y: 0 });
@@ -40,22 +43,36 @@ export function FranceMap({ darkMode = false, onMapLoad, className = '', selecte
   ]);
 
   // Fetch GeoJSON data from API
-  const fetchGeoJSON = async (level: AdminLevelPlural, criterionId?: string | null) => {
+  const fetchGeoJSON = useCallback(async (
+    level: AdminLevelPlural,
+    criterionId?: string | null,
+    parentCode?: string | null,
+    bbox?: string | null
+  ) => {
     try {
-      let url = `/api/geo/${level}`;
+      const params = new URLSearchParams();
       if (criterionId) {
-        url += `?criterion=${encodeURIComponent(criterionId)}`;
+        params.set('criterion', criterionId);
       }
+      if (parentCode) {
+        params.set('parent', parentCode);
+      }
+      if (bbox) {
+        params.set('bbox', bbox);
+      }
+
+      const url = `/api/geo/${level}${params.toString() ? `?${params.toString()}` : ''}`;
       const response = await fetch(url);
       if (!response.ok) {
-        throw new Error(`Failed to fetch ${level} data`);
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.error || `Failed to fetch ${level} data`);
       }
       return await response.json();
     } catch (error) {
       console.error(`Error fetching ${level}:`, error);
       return null;
     }
-  };
+  }, []);
 
   // Get feature properties from map event
   const getFeatureAtPoint = useCallback((e: MapMouseEvent): GeoFeatureProperties | null => {
@@ -111,70 +128,6 @@ export function FranceMap({ darkMode = false, onMapLoad, className = '', selecte
     }
   }, []);
 
-  // Handle click navigation
-  const handleClick = useCallback((e: MapMouseEvent) => {
-    const feature = getFeatureAtPoint(e);
-
-    if (!feature || !map.current) return;
-
-    const { level, code, nom } = feature;
-
-    if (level === 'region') {
-      // Zoom to region and prepare to load departements
-      zoomToFeature(code, 'regions-source');
-      setBreadcrumb([
-        { level: 'france', nom: 'France' },
-        { level: 'region', code, nom }
-      ]);
-
-      // TODO: Load departements for this region
-      console.log('Load departements for region:', code);
-    } else if (level === 'departement') {
-      // Zoom to departement and prepare to load communes
-      zoomToFeature(code, 'departements-source');
-      setBreadcrumb(prev => {
-        const regionItem = prev.find(item => item.level === 'region');
-        return [
-          { level: 'france', nom: 'France' },
-          ...(regionItem ? [regionItem] : []),
-          { level: 'departement', code, nom }
-        ];
-      });
-
-      // TODO: Load communes for this departement
-      console.log('Load communes for departement:', code);
-    } else if (level === 'commune') {
-      // Open detail panel
-      setSelectedFeature(feature);
-    }
-  }, [getFeatureAtPoint, zoomToFeature]);
-
-  // Handle breadcrumb navigation
-  const handleBreadcrumbNavigate = useCallback((index: number) => {
-    if (!map.current) return;
-
-    const item = breadcrumb[index];
-
-    if (item.level === 'france') {
-      // Reset to France view
-      map.current.flyTo({
-        center: FRANCE_CENTER,
-        zoom: DEFAULT_MAP_OPTIONS.zoom,
-        duration: 1000,
-      });
-      setBreadcrumb([{ level: 'france', nom: 'France' }]);
-    } else {
-      // Navigate to that level
-      setBreadcrumb(breadcrumb.slice(0, index + 1));
-
-      if (item.code) {
-        // Zoom to the selected item
-        const sourceId = item.level === 'region' ? 'regions-source' : 'departements-source';
-        zoomToFeature(item.code, sourceId);
-      }
-    }
-  }, [breadcrumb, zoomToFeature]);
-
   // Build choropleth fill-color expression for MapLibre
   const buildFillColor = useCallback((criterionId: string | null): maplibregl.ExpressionSpecification => {
     const noDataColor = '#e2e8f0'; // Gray for missing data
@@ -220,10 +173,20 @@ export function FranceMap({ darkMode = false, onMapLoad, className = '', selecte
   }, []);
 
   // Add or update GeoJSON layer
-  const updateGeoJSONLayer = useCallback(async (level: AdminLevelPlural, criterionId?: string | null) => {
+  const updateGeoJSONLayer = useCallback(async (
+    level: AdminLevelPlural,
+    criterionId?: string | null,
+    parentCode?: string | null
+  ) => {
     if (!map.current) return;
 
-    const geojson = await fetchGeoJSON(level, criterionId);
+    // Update current parent code
+    if (parentCode !== undefined) {
+      currentParentCode.current = parentCode;
+    }
+
+    // For communes, require parent code (departement) to prevent timeout
+    const geojson = await fetchGeoJSON(level, criterionId, level === 'communes' ? (parentCode ?? currentParentCode.current) : parentCode);
     if (!geojson) return;
 
     const sourceId = `${level}-source`;
@@ -346,7 +309,79 @@ export function FranceMap({ darkMode = false, onMapLoad, className = '', selecte
 
     map.current.on('mouseenter', layerId, mouseEnterHandler);
     map.current.on('mouseleave', layerId, mouseLeaveHandler);
-  }, [darkMode, buildFillColor]);
+  }, [darkMode, buildFillColor, fetchGeoJSON]);
+
+  // Handle click navigation
+  const handleClick = useCallback((e: MapMouseEvent) => {
+    const feature = getFeatureAtPoint(e);
+
+    if (!feature || !map.current) return;
+
+    const { level, code, nom } = feature;
+
+    if (level === 'region') {
+      // Zoom to region and load departements for this region
+      zoomToFeature(code, 'regions-source');
+      setBreadcrumb([
+        { level: 'france', nom: 'France' },
+        { level: 'region', code, nom }
+      ]);
+
+      // Load departements filtered by this region
+      setCurrentLevel('departements');
+      updateGeoJSONLayer('departements', selectedCriterion, code);
+    } else if (level === 'departement') {
+      // Zoom to departement and load communes for this departement
+      zoomToFeature(code, 'departements-source');
+      setBreadcrumb(prev => {
+        const regionItem = prev.find(item => item.level === 'region');
+        return [
+          { level: 'france', nom: 'France' },
+          ...(regionItem ? [regionItem] : []),
+          { level: 'departement', code, nom }
+        ];
+      });
+
+      // Load communes filtered by this departement
+      setCurrentLevel('communes');
+      updateGeoJSONLayer('communes', selectedCriterion, code);
+    } else if (level === 'commune') {
+      // Open detail panel
+      setSelectedFeature(feature);
+    }
+  }, [getFeatureAtPoint, zoomToFeature, selectedCriterion, updateGeoJSONLayer]);
+
+  // Handle breadcrumb navigation
+  const handleBreadcrumbNavigate = useCallback((index: number) => {
+    if (!map.current) return;
+
+    const item = breadcrumb[index];
+
+    if (item.level === 'france') {
+      // Reset to France view
+      map.current.flyTo({
+        center: FRANCE_CENTER,
+        zoom: DEFAULT_MAP_OPTIONS.zoom,
+        duration: 1000,
+      });
+      setBreadcrumb([{ level: 'france', nom: 'France' }]);
+      setCurrentLevel('regions');
+      currentParentCode.current = null;
+      updateGeoJSONLayer('regions', selectedCriterion, null);
+    } else if (item.level === 'region' && item.code) {
+      // Navigate to region - show departements
+      setBreadcrumb(breadcrumb.slice(0, index + 1));
+      zoomToFeature(item.code, 'regions-source');
+      setCurrentLevel('departements');
+      updateGeoJSONLayer('departements', selectedCriterion, item.code);
+    } else if (item.level === 'departement' && item.code) {
+      // Navigate to departement - show communes
+      setBreadcrumb(breadcrumb.slice(0, index + 1));
+      zoomToFeature(item.code, 'departements-source');
+      setCurrentLevel('communes');
+      updateGeoJSONLayer('communes', selectedCriterion, item.code);
+    }
+  }, [breadcrumb, zoomToFeature, selectedCriterion, updateGeoJSONLayer]);
 
   // Handle mouse move for tooltip
   const handleMouseMove = useCallback((e: MapMouseEvent) => {
@@ -367,16 +402,26 @@ export function FranceMap({ darkMode = false, onMapLoad, className = '', selecte
     return 'communes';
   };
 
-  // Handle zoom changes
+  // Handle zoom changes - only update regions/departements, communes require explicit navigation
   const handleZoomChange = useCallback(() => {
     if (!map.current) return;
 
     const zoom = map.current.getZoom();
     const newLevel = determineLevel(zoom);
 
+    // Only auto-switch for regions and departements
+    // Communes require explicit click navigation with parent code
     if (newLevel !== currentLevel) {
-      setCurrentLevel(newLevel);
-      updateGeoJSONLayer(newLevel, selectedCriterion);
+      if (newLevel === 'regions') {
+        setCurrentLevel('regions');
+        currentParentCode.current = null;
+        updateGeoJSONLayer('regions', selectedCriterion);
+      } else if (newLevel === 'departements' && currentLevel === 'regions') {
+        // Zooming from regions to departements - load all departements
+        setCurrentLevel('departements');
+        updateGeoJSONLayer('departements', selectedCriterion);
+      }
+      // Don't auto-load communes on zoom - they require parent code
     }
   }, [currentLevel, updateGeoJSONLayer, selectedCriterion]);
 
@@ -459,7 +504,8 @@ export function FranceMap({ darkMode = false, onMapLoad, className = '', selecte
     if (!map.current || !isLoaded) return;
 
     // Re-fetch and re-render the current level with the new criterion
-    updateGeoJSONLayer(currentLevel, selectedCriterion);
+    // Pass existing parent code for communes level
+    updateGeoJSONLayer(currentLevel, selectedCriterion, currentParentCode.current);
   }, [selectedCriterion, isLoaded, currentLevel, updateGeoJSONLayer]);
 
   return (
