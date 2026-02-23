@@ -14,16 +14,10 @@ export async function POST(request: NextRequest) {
 
   const supabase = await createClient();
 
-  // Check if data already exists
-  const { count } = await supabase
-    .from('criterion_values')
-    .select('*', { count: 'exact', head: true });
+  // Parse optional force parameter
+  const { force } = await request.clone().json().catch(() => ({ force: false }));
 
-  if (count && count > 0) {
-    return NextResponse.json({ message: `Already seeded (${count} rows)`, skipped: true });
-  }
-
-  // Get all communes from Occitanie departements
+  // Check existing data for Occitanie
   const deptCodes = ['09', '11', '12', '30', '31', '32', '34', '46', '48', '65', '66', '81', '82'];
   const { data: communes, error: communeError } = await supabase
     .from('communes')
@@ -33,6 +27,26 @@ export async function POST(request: NextRequest) {
   if (communeError || !communes?.length) {
     return NextResponse.json({ error: 'No communes found', details: communeError }, { status: 500 });
   }
+
+  // Check which communes already have data
+  const communeCodes = communes.map(c => c.code);
+  const { data: existingData } = await supabase
+    .from('criterion_values')
+    .select('commune_code')
+    .in('commune_code', communeCodes.slice(0, 100));
+
+  const existingCodes = new Set(existingData?.map(r => r.commune_code) || []);
+  const communesToSeed = communes.filter(c => !existingCodes.has(c.code));
+
+  if (communesToSeed.length === 0 && !force) {
+    return NextResponse.json({
+      message: `All ${communes.length} Occitanie communes already have data`,
+      skipped: true,
+    });
+  }
+
+  // Use all communes if force, otherwise only missing ones
+  const targetCommunes = force ? communes : communesToSeed;
 
   // Define criteria with realistic value ranges
   const criteriaRanges: Record<string, { min: number; max: number; unit: string }> = {
@@ -73,7 +87,7 @@ export async function POST(request: NextRequest) {
     source_date: string;
   }[] = [];
 
-  for (const commune of communes) {
+  for (const commune of targetCommunes) {
     let criterionIndex = 0;
     for (const [criterionId, range] of Object.entries(criteriaRanges)) {
       const rand = seededRandom(commune.code, criterionIndex);
@@ -97,7 +111,9 @@ export async function POST(request: NextRequest) {
   // Insert in batches
   for (let i = 0; i < allRows.length; i += BATCH_SIZE) {
     const batch = allRows.slice(i, i + BATCH_SIZE);
-    const { error } = await supabase.from('criterion_values').insert(batch);
+    const { error } = await supabase.from('criterion_values').upsert(batch, {
+      onConflict: 'commune_code,criterion_id',
+    });
     if (error) {
       return NextResponse.json({
         error: 'Insert failed',
@@ -111,7 +127,7 @@ export async function POST(request: NextRequest) {
 
   return NextResponse.json({
     message: 'Seeded successfully',
-    communes: communes.length,
+    communes: targetCommunes.length,
     criteria: Object.keys(criteriaRanges).length,
     totalRows: totalInserted,
   });
