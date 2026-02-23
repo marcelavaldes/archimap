@@ -14,11 +14,12 @@ export async function POST(request: NextRequest) {
 
   const supabase = await createClient();
 
-  // Parse optional force parameter
-  const { force } = await request.clone().json().catch(() => ({ force: false }));
+  // Parse optional parameters
+  const body = await request.clone().json().catch(() => ({}));
+  const dept = body.dept; // Seed one département at a time
 
-  // Check existing data for Occitanie
-  const deptCodes = ['09', '11', '12', '30', '31', '32', '34', '46', '48', '65', '66', '81', '82'];
+  // Target département(s)
+  const deptCodes = dept ? [dept] : ['34']; // Default to Hérault only
   const { data: communes, error: communeError } = await supabase
     .from('communes')
     .select('code, code_departement')
@@ -28,25 +29,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'No communes found', details: communeError }, { status: 500 });
   }
 
-  // Check which communes already have data
-  const communeCodes = communes.map(c => c.code);
-  const { data: existingData } = await supabase
-    .from('criterion_values')
-    .select('commune_code')
-    .in('commune_code', communeCodes.slice(0, 100));
-
-  const existingCodes = new Set(existingData?.map(r => r.commune_code) || []);
-  const communesToSeed = communes.filter(c => !existingCodes.has(c.code));
-
-  if (communesToSeed.length === 0 && !force) {
-    return NextResponse.json({
-      message: `All ${communes.length} Occitanie communes already have data`,
-      skipped: true,
-    });
-  }
-
-  // Use all communes if force, otherwise only missing ones
-  const targetCommunes = force ? communes : communesToSeed;
+  const targetCommunes = communes;
 
   // Define criteria with realistic value ranges
   const criteriaRanges: Record<string, { min: number; max: number; unit: string }> = {
