@@ -52,9 +52,6 @@ export function FranceMap({
   const hoveredFeatureId = useRef<string | number | null>(null);
   const initialNavigationDone = useRef(false);
 
-  // Ref to hold the latest updateGeoJSONLayer function to avoid stale closures
-  const updateGeoJSONLayerRef = useRef<typeof updateGeoJSONLayer | null>(null);
-
   // Track current parent code for navigation
   const currentParentCode = useRef<string | null>(
     initialDepartment?.code || initialRegion?.code || null
@@ -364,9 +361,6 @@ export function FranceMap({
     map.current.on('mouseleave', layerId, mouseLeaveHandler);
   }, [darkMode, buildFillColor, fetchGeoJSON]);
 
-  // Keep ref updated with latest function to avoid stale closures in map event handlers
-  updateGeoJSONLayerRef.current = updateGeoJSONLayer;
-
   // Handle click navigation
   const handleClick = useCallback((e: MapMouseEvent) => {
     const feature = getFeatureAtPoint(e);
@@ -515,41 +509,10 @@ export function FranceMap({
       'bottom-left'
     );
 
-    map.current.on('load', async () => {
+    map.current.on('load', () => {
       setIsLoaded(true);
-
-      // Use ref to get the latest version of updateGeoJSONLayer (avoids stale closure)
-      const loadLayer = updateGeoJSONLayerRef.current;
-      if (!loadLayer) return;
-
-      // Load the appropriate layer based on initial navigation state
-      if (initialDepartment) {
-        // Load communes for the department
-        await loadLayer('communes', selectedCriterion, initialDepartment.code);
-      } else if (initialRegion) {
-        // Load departements for the region
-        await loadLayer('departements', selectedCriterion, initialRegion.code);
-      } else {
-        // Load initial regions layer
-        await loadLayer('regions', selectedCriterion);
-      }
-
       if (onMapLoad && map.current) {
         onMapLoad(map.current);
-      }
-
-      // Zoom to initial location after data loads
-      if (!initialNavigationDone.current) {
-        initialNavigationDone.current = true;
-        setTimeout(() => {
-          if (initialDepartment && map.current) {
-            // Zoom to department
-            zoomToFeature(initialDepartment.code, 'communes-source');
-          } else if (initialRegion && map.current) {
-            // Zoom to region
-            zoomToFeature(initialRegion.code, 'departements-source');
-          }
-        }, 500);
       }
     });
 
@@ -563,6 +526,40 @@ export function FranceMap({
       }
     };
   }, []);
+
+  // Load initial layer when map becomes ready
+  useEffect(() => {
+    if (!map.current || !isLoaded) return;
+    if (initialNavigationDone.current) return; // Only run once
+
+    initialNavigationDone.current = true;
+
+    const loadInitialLayer = async () => {
+      // Load the appropriate layer based on initial navigation state
+      if (initialDepartment) {
+        await updateGeoJSONLayer('communes', selectedCriterion, initialDepartment.code);
+        // Zoom to department after layer loads
+        setTimeout(() => {
+          if (map.current) {
+            zoomToFeature(initialDepartment.code, 'communes-source');
+          }
+        }, 500);
+      } else if (initialRegion) {
+        await updateGeoJSONLayer('departements', selectedCriterion, initialRegion.code);
+        // Zoom to region after layer loads
+        setTimeout(() => {
+          if (map.current) {
+            zoomToFeature(initialRegion.code, 'departements-source');
+          }
+        }, 500);
+      } else {
+        // Load initial regions layer
+        await updateGeoJSONLayer('regions', selectedCriterion);
+      }
+    };
+
+    loadInitialLayer();
+  }, [isLoaded, initialDepartment, initialRegion, selectedCriterion, updateGeoJSONLayer, zoomToFeature]);
 
   // Setup global map event listeners
   useEffect(() => {
