@@ -6,7 +6,10 @@ import { useMapContext } from './layout';
 import { CRITERIA } from '@/types/criteria';
 import { generateColorStops } from '@/lib/map/colors';
 
-const BUILD_TIME = '2026-02-23 23:00 UTC';
+const BUILD_TIME = '2026-02-23 23:15 UTC';
+
+// Départements with criterion data (Hérault area for demo)
+const DEMO_DEPARTEMENTS = ['34', '30', '11', '66', '09', '31', '81', '12', '48', '07'];
 
 export default function MapPage() {
   const mapContainer = useRef<HTMLDivElement>(null);
@@ -51,41 +54,58 @@ export default function MapPage() {
 
     const mapInstance = map.current;
 
-    // Build URL with criterion
-    let url = '/api/geo/regions';
-    if (criterionId) {
-      url += `?criterion=${criterionId}`;
-    }
-
-    setStatus('Chargement des données...');
-
-    try {
-      const response = await fetch(url);
-      const geojson = await response.json();
-
-      // Remove existing layers/source if they exist
-      if (mapInstance.getLayer('regions-line')) {
-        mapInstance.removeLayer('regions-line');
+    // Remove all existing layers/sources
+    ['communes', 'regions'].forEach(sourceId => {
+      if (mapInstance.getLayer(`${sourceId}-line`)) {
+        mapInstance.removeLayer(`${sourceId}-line`);
       }
-      if (mapInstance.getLayer('regions-fill')) {
-        mapInstance.removeLayer('regions-fill');
+      if (mapInstance.getLayer(`${sourceId}-fill`)) {
+        mapInstance.removeLayer(`${sourceId}-fill`);
       }
-      if (mapInstance.getSource('regions')) {
-        mapInstance.removeSource('regions');
+      if (mapInstance.getSource(sourceId)) {
+        mapInstance.removeSource(sourceId);
+      }
+    });
+
+    // If criterion selected, load communes (which have criterion data)
+    // Otherwise load regions
+    if (criterionId && CRITERIA[criterionId]) {
+      setStatus('Chargement des communes avec critère...');
+
+      // Load communes from multiple départements for demo
+      const allFeatures: unknown[] = [];
+
+      for (const deptCode of DEMO_DEPARTEMENTS) {
+        try {
+          const response = await fetch(`/api/geo/communes?parent=${deptCode}&criterion=${criterionId}`);
+          if (response.ok) {
+            const geojson = await response.json();
+            if (geojson.features) {
+              allFeatures.push(...geojson.features);
+            }
+          }
+        } catch (e) {
+          console.error(`Failed to load dept ${deptCode}:`, e);
+        }
       }
 
-      // Add source
-      mapInstance.addSource('regions', {
+      const communesGeojson = {
+        type: 'FeatureCollection',
+        features: allFeatures,
+      };
+
+      // Add communes source
+      mapInstance.addSource('communes', {
         type: 'geojson',
-        data: geojson,
+        data: communesGeojson as GeoJSON.FeatureCollection,
         promoteId: 'id',
       });
 
       // Add fill layer with choropleth
       mapInstance.addLayer({
-        id: 'regions-fill',
+        id: 'communes-fill',
         type: 'fill',
-        source: 'regions',
+        source: 'communes',
         paint: {
           'fill-color': buildFillColor(criterionId),
           'fill-opacity': 0.7,
@@ -93,6 +113,50 @@ export default function MapPage() {
       });
 
       // Add line layer
+      mapInstance.addLayer({
+        id: 'communes-line',
+        type: 'line',
+        source: 'communes',
+        paint: {
+          'line-color': '#000',
+          'line-width': 0.5,
+          'line-opacity': 0.3,
+        },
+      });
+
+      // Zoom to Occitanie region
+      mapInstance.flyTo({
+        center: [2.5, 43.5],
+        zoom: 7,
+        duration: 1000,
+      });
+
+      const withScore = allFeatures.filter((f: any) => f.properties?.criterionScore != null).length;
+      setStatus(`${allFeatures.length} communes (${withScore} avec données) - ${CRITERIA[criterionId].name}`);
+
+    } else {
+      // No criterion - load regions
+      setStatus('Chargement des régions...');
+
+      const response = await fetch('/api/geo/regions');
+      const geojson = await response.json();
+
+      mapInstance.addSource('regions', {
+        type: 'geojson',
+        data: geojson,
+        promoteId: 'id',
+      });
+
+      mapInstance.addLayer({
+        id: 'regions-fill',
+        type: 'fill',
+        source: 'regions',
+        paint: {
+          'fill-color': '#2196F3',
+          'fill-opacity': 0.6,
+        },
+      });
+
       mapInstance.addLayer({
         id: 'regions-line',
         type: 'line',
@@ -104,13 +168,14 @@ export default function MapPage() {
         },
       });
 
-      const criterionName = criterionId && CRITERIA[criterionId]
-        ? ` - ${CRITERIA[criterionId].name}`
-        : '';
-      setStatus(`${geojson.features?.length || 0} régions${criterionName}`);
+      // Reset view to France
+      mapInstance.flyTo({
+        center: [2.5, 46.5],
+        zoom: 5,
+        duration: 1000,
+      });
 
-    } catch (error) {
-      setStatus('Erreur: ' + String(error));
+      setStatus(`${geojson.features?.length || 0} régions`);
     }
   }, [buildFillColor]);
 
