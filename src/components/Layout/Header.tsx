@@ -1,7 +1,6 @@
 'use client';
 
-import { useState, Suspense } from 'react';
-import { SearchBar } from '@/components/Search';
+import { useState } from 'react';
 
 interface HeaderProps {
   onDarkModeToggle?: (isDark: boolean) => void;
@@ -28,13 +27,11 @@ export function Header({ onDarkModeToggle }: HeaderProps) {
         </span>
       </div>
 
-      {/* Search Bar - wrapped in Suspense for useSearchParams */}
+      {/* Search placeholder - will re-add later */}
       <div className="flex-1 max-w-md">
-        <Suspense fallback={
-          <div className="w-full h-9 bg-secondary/50 rounded-lg animate-pulse" />
-        }>
-          <SearchBar />
-        </Suspense>
+        <div className="w-full h-9 bg-secondary/30 rounded-lg flex items-center justify-center text-sm text-muted-foreground">
+          Recherche (bientôt)
+        </div>
       </div>
 
       <div className="flex items-center gap-4 flex-shrink-0">

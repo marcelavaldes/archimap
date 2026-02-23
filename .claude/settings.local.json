@@ -5,7 +5,8 @@
       "WebFetch(domain:francetravail.io)",
       "WebFetch(domain:donneespubliques.meteofrance.fr)",
       "WebFetch(domain:app.dvf.etalab.gouv.fr)",
-      "WebFetch(domain:vercel.com)"
+      "WebFetch(domain:vercel.com)",
+      "WebFetch(domain:archimap-eight.vercel.app)"
     ]
   }
 }

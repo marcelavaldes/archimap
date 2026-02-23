@@ -1,7 +1,6 @@
 'use client';
 
-import { useState, useCallback, createContext, useContext, ReactNode, Suspense } from 'react';
-import { useRouter, useSearchParams, usePathname } from 'next/navigation';
+import { useState, useCallback, createContext, useContext, ReactNode } from 'react';
 import type { Map } from 'maplibre-gl';
 import { Header, Sidebar } from '@/components/Layout';
 
@@ -27,37 +26,11 @@ export function useMapContext() {
   return context;
 }
 
-// Inner layout component that uses searchParams
-function MapLayoutInner({ children }: { children: ReactNode }) {
-  const router = useRouter();
-  const pathname = usePathname();
-  const searchParams = useSearchParams();
-
+export default function MapLayout({ children }: { children: ReactNode }) {
   const [darkMode, setDarkMode] = useState(false);
   const [map, setMap] = useState<Map | null>(null);
   const [activeLayers, setActiveLayers] = useState<string[]>([]);
-
-  // Get criterion from URL or state
-  const criterionFromUrl = searchParams.get('criterion');
-  const [selectedCriterion, setSelectedCriterionState] = useState<string | null>(
-    criterionFromUrl
-  );
-
-  // Sync criterion selection with URL
-  const setSelectedCriterion = useCallback((criterion: string | null) => {
-    setSelectedCriterionState(criterion);
-
-    // Update URL with criterion parameter
-    const params = new URLSearchParams(searchParams.toString());
-    if (criterion) {
-      params.set('criterion', criterion);
-    } else {
-      params.delete('criterion');
-    }
-
-    const newUrl = params.toString() ? `${pathname}?${params.toString()}` : pathname;
-    router.replace(newUrl, { scroll: false });
-  }, [pathname, router, searchParams]);
+  const [selectedCriterion, setSelectedCriterion] = useState<string | null>(null);
 
   const handleDarkModeToggle = useCallback((isDark: boolean) => {
     setDarkMode(isDark);
@@ -114,32 +87,5 @@ function MapLayoutInner({ children }: { children: ReactNode }) {
         </div>
       </div>
     </MapContext.Provider>
-  );
-}
-
-// Loading fallback for Suspense
-function MapLayoutFallback() {
-  return (
-    <div className="flex flex-col h-screen">
-      <div className="h-14 border-b border-border bg-background" />
-      <div className="flex flex-1 overflow-hidden">
-        <div className="w-72 border-r border-border bg-background" />
-        <main className="flex-1 relative flex items-center justify-center">
-          <div className="flex flex-col items-center gap-2">
-            <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
-            <span className="text-sm text-muted-foreground">Chargement...</span>
-          </div>
-        </main>
-      </div>
-    </div>
-  );
-}
-
-// Main layout export wrapped in Suspense
-export default function MapLayout({ children }: { children: ReactNode }) {
-  return (
-    <Suspense fallback={<MapLayoutFallback />}>
-      <MapLayoutInner>{children}</MapLayoutInner>
-    </Suspense>
   );
 }
