@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { CRITERIA, CRITERION_CATEGORIES, type CriterionCategory } from '@/types/criteria';
+import { useDebug } from '@/lib/debug/DebugContext';
 
 interface SidebarProps {
   selectedCriterion: string | null;
@@ -16,6 +17,7 @@ export function Sidebar({
   activeLayers,
   onLayerToggle,
 }: SidebarProps) {
+  const { log } = useDebug();
   const [expandedCategory, setExpandedCategory] = useState<CriterionCategory | null>('climate');
 
   const criteriaByCategory = Object.values(CRITERIA).reduce(
@@ -77,7 +79,11 @@ export function Sidebar({
                           className="h-4 w-4 rounded border-border text-primary focus:ring-primary"
                         />
                         <button
-                          onClick={() => onCriterionSelect(isSelected ? null : criterion.id)}
+                          onClick={() => {
+                            const next = isSelected ? null : criterion.id;
+                            log('STATE', 'info', next ? `Criterion selected: ${criterion.name}` : `Criterion deselected: ${criterion.name}`, { criterionId: criterion.id, action: next ? 'select' : 'deselect' });
+                            onCriterionSelect(next);
+                          }}
                           className="flex-1 text-left text-sm"
                         >
                           {criterion.name}

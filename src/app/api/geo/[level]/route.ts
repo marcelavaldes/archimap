@@ -140,22 +140,48 @@ export async function GET(
           }
         }
 
-        data.features = data.features.map((feature) => ({
-          ...feature,
-          properties: {
-            ...feature.properties,
-            criterionValue: criterionMap.get(feature.id)?.value,
-            criterionScore: criterionMap.get(feature.id)?.score,
-            criterionRank: criterionMap.get(feature.id)?.rank_national,
-          },
-        }));
+        let enrichedCount = 0;
+        data.features = data.features.map((feature) => {
+          const match = criterionMap.get(feature.id);
+          if (match) enrichedCount++;
+          return {
+            ...feature,
+            properties: {
+              ...feature.properties,
+              criterionValue: match?.value,
+              criterionScore: match?.score,
+              criterionRank: match?.rank_national,
+            },
+          };
+        });
+
+        // Log enrichment stats server-side
+        console.log(`[DEBUG] Enrichment: ${enrichedCount}/${data.features.length} features matched for criterion=${criterionId}, level=${level}, parent=${parentCode}`);
+        if (enrichedCount === 0 && data.features.length > 0) {
+          const sampleFeatureId = data.features[0]?.id;
+          const sampleMapKeys = Array.from(criterionMap.keys()).slice(0, 5);
+          console.warn(`[DEBUG] Zero enrichment! Sample feature.id="${sampleFeatureId}", sample criterionMap keys=${JSON.stringify(sampleMapKeys)}`);
+        }
       }
     }
 
-    // Set cache headers
+    // Set cache headers + debug headers
     const headers = new Headers();
     headers.set('Content-Type', 'application/json');
     headers.set('Cache-Control', 'public, max-age=3600, stale-while-revalidate=86400');
+
+    // Debug headers for client-side observability
+    if (data?.features) {
+      headers.set('X-Debug-Feature-Count', String(data.features.length));
+      headers.set('X-Debug-Level', level);
+      if (criterionId) {
+        headers.set('X-Debug-Criterion', criterionId);
+        const enriched = data.features.filter(
+          (f) => f.properties.criterionScore != null
+        ).length;
+        headers.set('X-Debug-Enriched-Count', String(enriched));
+      }
+    }
 
     return new NextResponse(JSON.stringify(data), { headers });
   } catch (error) {

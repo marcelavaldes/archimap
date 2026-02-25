@@ -3,6 +3,8 @@
 import { useState, useCallback, createContext, useContext, ReactNode } from 'react';
 import type { Map } from 'maplibre-gl';
 import { Header, Sidebar } from '@/components/Layout';
+import { DebugProvider } from '@/lib/debug/DebugContext';
+import { DebugPanel } from '@/components/Debug/DebugPanel';
 
 // Map context for sharing state between layout and pages
 interface MapContextType {
@@ -57,36 +59,40 @@ export default function MapLayout({ children }: { children: ReactNode }) {
 
   return (
     <MapContext.Provider value={contextValue}>
-      <div className="flex flex-col h-screen">
-        <Header onDarkModeToggle={handleDarkModeToggle} />
+      <DebugProvider>
+        <div className="flex flex-col h-screen">
+          <Header onDarkModeToggle={handleDarkModeToggle} />
 
-        <div className="flex flex-1 overflow-hidden">
-          <Sidebar
-            selectedCriterion={selectedCriterion}
-            onCriterionSelect={setSelectedCriterion}
-            activeLayers={activeLayers}
-            onLayerToggle={toggleLayer}
-          />
+          <div className="flex flex-1 overflow-hidden">
+            <Sidebar
+              selectedCriterion={selectedCriterion}
+              onCriterionSelect={setSelectedCriterion}
+              activeLayers={activeLayers}
+              onLayerToggle={toggleLayer}
+            />
 
-          <main className="flex-1 relative">
-            {children}
+            <main className="flex-1 relative">
+              {children}
 
-            {/* Active layers indicator */}
-            {activeLayers.length > 0 && (
-              <div className="absolute top-4 left-4 bg-background/90 backdrop-blur-sm border border-border rounded-lg px-3 py-2 text-sm z-30">
-                <span className="text-muted-foreground">Couches actives: </span>
-                <span className="font-medium">{activeLayers.length}</span>
+              {/* Active layers indicator */}
+              {activeLayers.length > 0 && (
+                <div className="absolute top-4 left-4 bg-background/90 backdrop-blur-sm border border-border rounded-lg px-3 py-2 text-sm z-30">
+                  <span className="text-muted-foreground">Couches actives: </span>
+                  <span className="font-medium">{activeLayers.length}</span>
+                </div>
+              )}
+
+              {/* Map status + Build version */}
+              <div className="absolute bottom-4 right-4 bg-background/90 backdrop-blur-sm border border-border rounded-lg px-3 py-2 text-xs text-muted-foreground z-30">
+                <div>{map ? 'Carte prête' : 'Initialisation...'}</div>
+                <div className="text-[10px] opacity-60 mt-1">Build: 2026-02-23 22:45 UTC</div>
               </div>
-            )}
 
-            {/* Map status + Build version */}
-            <div className="absolute bottom-4 right-4 bg-background/90 backdrop-blur-sm border border-border rounded-lg px-3 py-2 text-xs text-muted-foreground z-30">
-              <div>{map ? 'Carte prête' : 'Initialisation...'}</div>
-              <div className="text-[10px] opacity-60 mt-1">Build: 2026-02-23 22:45 UTC</div>
-            </div>
-          </main>
+              <DebugPanel />
+            </main>
+          </div>
         </div>
-      </div>
+      </DebugProvider>
     </MapContext.Provider>
   );
 }
