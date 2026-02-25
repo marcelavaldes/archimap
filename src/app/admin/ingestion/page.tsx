@@ -6,7 +6,7 @@ interface IngestionCriterion {
   id: string;
   name: string;
   ingestion_type: string;
-  api_config: { script?: string; description?: string } | null;
+  api_config: { script?: string; description?: string; source_url?: string } | null;
   last_updated: string | null;
   coverage: {
     communes_with_data: number;
@@ -155,7 +155,7 @@ export default function IngestionPage() {
             <thead className="bg-gray-50">
               <tr>
                 <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Critère</th>
-                <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Script</th>
+                <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Source</th>
                 <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Dernière MAJ</th>
                 <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Couverture</th>
                 <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase">Action</th>
@@ -165,8 +165,8 @@ export default function IngestionPage() {
               {criteria.map((c) => (
                 <tr key={c.id} className={`hover:bg-gray-50 ${running === c.id ? 'bg-blue-50' : ''}`}>
                   <td className="px-4 py-3 text-sm font-medium text-gray-900">{c.name}</td>
-                  <td className="px-4 py-3 text-xs text-gray-500 font-mono">
-                    {c.api_config?.script ?? '—'}
+                  <td className="px-4 py-3 text-xs text-gray-500">
+                    {c.api_config?.description ?? c.api_config?.script ?? '—'}
                   </td>
                   <td className="px-4 py-3 text-sm text-gray-500">
                     {c.last_updated ?? 'Jamais'}
