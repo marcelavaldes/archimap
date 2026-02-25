@@ -1,15 +1,14 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest } from 'next/server';
 import { verifyAdmin } from '@/lib/admin/auth';
 import { createAdminClient } from '@/lib/admin/supabase';
+import { ingestionRunners } from '@/lib/admin/ingestion-runners';
 
 export const runtime = 'nodejs';
-export const maxDuration = 60;
+export const maxDuration = 300;
 
 /**
- * POST /api/admin/ingestion/[criterionId]/run — Trigger re-ingestion
- * Note: This is a placeholder that reports the script to run.
- * Full inline execution would require importing each ingestion script,
- * which are currently designed as standalone Bun scripts.
+ * POST /api/admin/ingestion/[criterionId]/run
+ * Executes ingestion inline and streams logs via SSE.
  */
 export async function POST(
   request: NextRequest,
@@ -20,50 +19,92 @@ export async function POST(
 
   const { criterionId } = await params;
 
-  try {
-    const supabase = createAdminClient();
+  // Validate criterion exists and is API-type
+  const supabase = createAdminClient();
+  const { data: criterion, error } = await supabase
+    .from('criteria')
+    .select('id, name, ingestion_type, api_config')
+    .eq('id', criterionId)
+    .single();
 
-    const { data: criterion, error } = await supabase
-      .from('criteria')
-      .select('id, name, ingestion_type, api_config')
-      .eq('id', criterionId)
-      .single();
-
-    if (error || !criterion) {
-      return NextResponse.json({ error: 'Criterion not found' }, { status: 404 });
-    }
-
-    if (criterion.ingestion_type !== 'api') {
-      return NextResponse.json(
-        { error: 'Criterion is not API-based' },
-        { status: 400 }
-      );
-    }
-
-    const apiConfig = criterion.api_config as { script?: string; description?: string } | null;
-
-    if (!apiConfig?.script) {
-      return NextResponse.json(
-        { error: 'No ingestion script configured' },
-        { status: 400 }
-      );
-    }
-
-    // For now, return the script info for manual execution
-    // A full implementation would spawn a child process or import the script
-    return NextResponse.json({
-      status: 'manual_required',
-      criterionId: criterion.id,
-      criterionName: criterion.name,
-      script: apiConfig.script,
-      description: apiConfig.description ?? '',
-      command: `bun run scripts/ingest/${apiConfig.script}`,
-      message: `Run the ingestion script manually: bun run scripts/ingest/${apiConfig.script}`,
-    });
-  } catch (err) {
-    return NextResponse.json(
-      { error: err instanceof Error ? err.message : 'Internal error' },
-      { status: 500 }
+  if (error || !criterion) {
+    return new Response(
+      JSON.stringify({ error: 'Criterion not found' }),
+      { status: 404, headers: { 'Content-Type': 'application/json' } }
     );
   }
+
+  if (criterion.ingestion_type !== 'api') {
+    return new Response(
+      JSON.stringify({ error: 'Criterion is not API-based' }),
+      { status: 400, headers: { 'Content-Type': 'application/json' } }
+    );
+  }
+
+  const runner = ingestionRunners[criterionId];
+  if (!runner) {
+    return new Response(
+      JSON.stringify({ error: `No ingestion runner for ${criterionId}` }),
+      { status: 400, headers: { 'Content-Type': 'application/json' } }
+    );
+  }
+
+  // Stream logs via SSE
+  const encoder = new TextEncoder();
+
+  const stream = new ReadableStream({
+    async start(controller) {
+      const send = (type: string, data: Record<string, unknown>) => {
+        try {
+          controller.enqueue(
+            encoder.encode(`data: ${JSON.stringify({ type, ...data })}\n\n`)
+          );
+        } catch {
+          // Stream may be closed
+        }
+      };
+
+      const log = (message: string) => send('log', { message });
+
+      send('start', { criterionId, criterionName: criterion.name });
+      log(`Starting ingestion for: ${criterion.name}`);
+      log('');
+
+      try {
+        const result = await runner(log);
+
+        log('');
+        log(`=== COMPLETE ===`);
+        log(`Inserted: ${result.inserted} records`);
+        log(`Errors: ${result.errors}`);
+        log(`Communes: ${result.communes}`);
+
+        // Update last_updated on the criterion
+        await supabase
+          .from('criteria')
+          .update({ last_updated: new Date().toISOString().split('T')[0] })
+          .eq('id', criterionId);
+
+        send('done', {
+          inserted: result.inserted,
+          errors: result.errors,
+          communes: result.communes,
+        });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Unknown error';
+        log(`\nERROR: ${message}`);
+        send('error', { message });
+      }
+
+      controller.close();
+    },
+  });
+
+  return new Response(stream, {
+    headers: {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      Connection: 'keep-alive',
+    },
+  });
 }
