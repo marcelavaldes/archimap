@@ -3,11 +3,8 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import maplibregl from 'maplibre-gl';
 import { useMapContext } from './layout';
-import { CRITERIA } from '@/types/criteria';
 import { generateColorStops } from '@/lib/map/colors';
 import { useDebug } from '@/lib/debug/DebugContext';
-
-const BUILD_TIME = '2026-02-23 23:15 UTC';
 
 // Départements with criterion data (Hérault area for demo)
 const DEMO_DEPARTEMENTS = ['34', '30', '11', '66', '09', '31', '81', '12', '48', '07'];
@@ -19,22 +16,28 @@ export default function MapPage() {
   const [status, setStatus] = useState('Initialisation...');
   const { log, updateDataQuality } = useDebug();
 
-  // Get criterion from context
-  const { selectedCriterion, setMap } = useMapContext();
+  // Stable refs so callbacks/effects always see latest without re-creating
+  const logRef = useRef(log);
+  logRef.current = log;
+  const updateDQRef = useRef(updateDataQuality);
+  updateDQRef.current = updateDataQuality;
+
+  // Get criterion and criteria from context
+  const { selectedCriterion, setMap, criteria } = useMapContext();
 
   // Build choropleth fill-color expression
   const buildFillColor = useCallback((criterionId: string | null): string | maplibregl.ExpressionSpecification => {
     const noDataColor = '#e2e8f0';
     const defaultColor = '#2196F3';
 
-    if (!criterionId || !CRITERIA[criterionId]) {
+    if (!criterionId || !criteria?.[criterionId]) {
       return defaultColor;
     }
 
-    const criterion = CRITERIA[criterionId];
+    const criterion = criteria[criterionId];
     const colorStops = generateColorStops(criterion, 10);
 
-    log('MAP', 'info', `buildFillColor: ${colorStops.length} stops generated`, {
+    logRef.current('MAP', 'info', `buildFillColor: ${colorStops.length} stops generated`, {
       criterionId,
       stops: colorStops,
     });
@@ -53,7 +56,7 @@ export default function MapPage() {
         ...colorStops.flatMap(([score, color]) => [score, color]),
       ],
     ];
-  }, [log]);
+  }, [criteria]);
 
   // Load GeoJSON layer
   const loadLayer = useCallback(async (criterionId: string | null) => {
@@ -77,9 +80,9 @@ export default function MapPage() {
 
     // If criterion selected, load communes (which have criterion data)
     // Otherwise load regions
-    if (criterionId && CRITERIA[criterionId]) {
+    if (criterionId && criteria?.[criterionId]) {
       setStatus('Chargement des communes avec critère...');
-      log('DATA', 'info', `Loading communes for criterion: ${criterionId}`, {
+      logRef.current('DATA', 'info', `Loading communes for criterion: ${criterionId}`, {
         departements: DEMO_DEPARTEMENTS,
       });
 
@@ -104,7 +107,7 @@ export default function MapPage() {
             const featureCount = geojson.features?.length ?? 0;
             allFeatures.push(...(geojson.features || []));
             deptsSucceeded++;
-            log('API', 'success', `Dept ${deptCode}: ${featureCount} features (${deptDuration}ms)`, {
+            logRef.current('API', 'success', `Dept ${deptCode}: ${featureCount} features (${deptDuration}ms)`, {
               deptCode,
               status: response.status,
               featureCount,
@@ -115,7 +118,7 @@ export default function MapPage() {
             });
           } else {
             deptsFailed++;
-            log('API', 'error', `Dept ${deptCode}: HTTP ${response.status} (${deptDuration}ms)`, {
+            logRef.current('API', 'error', `Dept ${deptCode}: HTTP ${response.status} (${deptDuration}ms)`, {
               deptCode,
               status: response.status,
               url,
@@ -123,7 +126,7 @@ export default function MapPage() {
           }
         } catch (e) {
           deptsFailed++;
-          log('API', 'error', `Dept ${deptCode}: network error`, {
+          logRef.current('API', 'error', `Dept ${deptCode}: network error`, {
             deptCode,
             error: String(e),
             url,
@@ -136,7 +139,7 @@ export default function MapPage() {
       const withValue = allFeatures.filter((f: any) => f.properties?.criterionValue != null).length;
       const loadDuration = performance.now() - loadStart;
 
-      log('DATA', withScore > 0 ? 'success' : 'warn',
+      logRef.current('DATA', withScore > 0 ? 'success' : 'warn',
         `Data quality: ${withScore}/${allFeatures.length} have criterionScore (${withValue} have criterionValue)`, {
           totalFeatures: allFeatures.length,
           withCriterionScore: withScore,
@@ -148,14 +151,14 @@ export default function MapPage() {
       // Log sample feature for debugging field naming issues
       if (allFeatures.length > 0) {
         const sample = allFeatures[0] as any;
-        log('DATA', 'info', `Sample feature properties (first commune)`, {
+        logRef.current('DATA', 'info', `Sample feature properties (first commune)`, {
           featureId: sample.id,
           properties: sample.properties,
           propertyKeys: Object.keys(sample.properties || {}),
         });
       }
 
-      updateDataQuality({
+      updateDQRef.current({
         totalFeatures: allFeatures.length,
         featuresWithScore: withScore,
         deptsFetched: DEMO_DEPARTEMENTS.length,
@@ -190,7 +193,7 @@ export default function MapPage() {
         },
       });
 
-      log('MAP', 'info', `Applied fill-color expression to communes-fill`, {
+      logRef.current('MAP', 'info', `Applied fill-color expression to communes-fill`, {
         expressionType: typeof fillColor === 'string' ? 'static' : 'expression',
         expression: fillColor,
       });
@@ -214,8 +217,8 @@ export default function MapPage() {
         duration: 1000,
       });
 
-      setStatus(`${allFeatures.length} communes (${withScore} avec données) - ${CRITERIA[criterionId].name}`);
-      log('DATA', 'success', `Layer loaded in ${loadDuration.toFixed(0)}ms`, {
+      setStatus(`${allFeatures.length} communes (${withScore} avec données) - ${criteria[criterionId].name}`);
+      logRef.current('DATA', 'success', `Layer loaded in ${loadDuration.toFixed(0)}ms`, {
         totalFeatures: allFeatures.length,
         withScore,
         durationMs: loadDuration.toFixed(0),
@@ -224,13 +227,13 @@ export default function MapPage() {
     } else {
       // No criterion - load regions
       setStatus('Chargement des régions...');
-      log('DATA', 'info', 'Loading regions (no criterion selected)');
+      logRef.current('DATA', 'info', 'Loading regions (no criterion selected)');
 
       try {
         const response = await fetch('/api/geo/regions');
         const geojson = await response.json();
 
-        log('API', response.ok ? 'success' : 'error', `Regions fetch: HTTP ${response.status}, ${geojson.features?.length ?? 0} features`);
+        logRef.current('API', response.ok ? 'success' : 'error', `Regions fetch: HTTP ${response.status}, ${geojson.features?.length ?? 0} features`);
 
         mapInstance.addSource('regions', {
           type: 'geojson',
@@ -268,19 +271,19 @@ export default function MapPage() {
 
         const loadDuration = performance.now() - loadStart;
         setStatus(`${geojson.features?.length || 0} régions`);
-        log('DATA', 'success', `Regions loaded in ${loadDuration.toFixed(0)}ms`);
+        logRef.current('DATA', 'success', `Regions loaded in ${loadDuration.toFixed(0)}ms`);
       } catch (e) {
-        log('ERROR', 'error', `Failed to load regions`, { error: String(e) });
+        logRef.current('ERROR', 'error', `Failed to load regions`, { error: String(e) });
       }
     }
-  }, [buildFillColor, log, updateDataQuality]);
+  }, [buildFillColor, criteria]);
 
   // Initialize map (only once)
   useEffect(() => {
     if (!mapContainer.current || map.current) return;
 
     setStatus('Création de la carte...');
-    log('MAP', 'info', 'Creating MapLibre instance');
+    logRef.current('MAP', 'info', 'Creating MapLibre instance');
 
     const mapInstance = new maplibregl.Map({
       container: mapContainer.current,
@@ -303,13 +306,13 @@ export default function MapPage() {
       map.current = mapInstance;
       setMap(mapInstance);
       setIsMapReady(true);
-      log('MAP', 'success', 'MapLibre loaded and ready');
+      logRef.current('MAP', 'success', 'MapLibre loaded and ready');
     });
 
     mapInstance.on('error', (e) => {
       const msg = e.error?.message || String(e);
       setStatus('Erreur carte: ' + msg);
-      log('ERROR', 'error', `MapLibre error: ${msg}`);
+      logRef.current('ERROR', 'error', `MapLibre error: ${msg}`);
     });
 
     return () => {
@@ -320,10 +323,18 @@ export default function MapPage() {
 
   // Load/reload layer when map is ready or criterion changes
   useEffect(() => {
-    if (!isMapReady) return;
-    log('STATE', 'info', `Criterion changed: ${selectedCriterion ?? '(none)'}`);
+    if (!isMapReady || !criteria) return;
+    logRef.current('STATE', 'info', `Criterion changed: ${selectedCriterion ?? '(none)'}`);
     loadLayer(selectedCriterion);
-  }, [isMapReady, selectedCriterion, loadLayer, log]);
+  }, [isMapReady, selectedCriterion, loadLayer, criteria]);
+
+  const buildTime = process.env.NEXT_PUBLIC_BUILD_TIME
+    ? new Date(process.env.NEXT_PUBLIC_BUILD_TIME).toLocaleString('fr-FR', { timeZone: 'UTC' })
+    : 'dev';
+
+  const selectedCrit = selectedCriterion && criteria?.[selectedCriterion]
+    ? criteria[selectedCriterion]
+    : null;
 
   return (
     <div className="absolute inset-0">
@@ -332,22 +343,22 @@ export default function MapPage() {
       {/* Status indicator */}
       <div className="absolute bottom-4 right-4 bg-white/90 backdrop-blur-sm border border-gray-200 rounded-lg px-3 py-2 text-xs text-gray-600 z-30 shadow-sm">
         <div>{status}</div>
-        <div className="text-[10px] opacity-60 mt-1">Build: {BUILD_TIME}</div>
+        <div className="text-[10px] opacity-60 mt-1">Build: {buildTime}</div>
       </div>
 
       {/* Legend for selected criterion */}
-      {selectedCriterion && CRITERIA[selectedCriterion] && (
+      {selectedCrit && (
         <div className="absolute bottom-4 left-4 bg-white/90 backdrop-blur-sm border border-gray-200 rounded-lg p-3 z-30 shadow-sm">
-          <div className="text-xs font-medium mb-2">{CRITERIA[selectedCriterion].name}</div>
+          <div className="text-xs font-medium mb-2">{selectedCrit.name}</div>
           <div
             className="h-3 w-32 rounded"
             style={{
-              background: `linear-gradient(90deg, ${CRITERIA[selectedCriterion].colorScale.low}, ${CRITERIA[selectedCriterion].colorScale.mid}, ${CRITERIA[selectedCriterion].colorScale.high})`,
+              background: `linear-gradient(90deg, ${selectedCrit.colorScale.low}, ${selectedCrit.colorScale.mid}, ${selectedCrit.colorScale.high})`,
             }}
           />
           <div className="flex justify-between text-[10px] text-gray-500 mt-1">
-            <span>{CRITERIA[selectedCriterion].higherIsBetter ? 'Faible' : 'Bon'}</span>
-            <span>{CRITERIA[selectedCriterion].higherIsBetter ? 'Élevé' : 'Mauvais'}</span>
+            <span>{selectedCrit.higherIsBetter ? 'Faible' : 'Bon'}</span>
+            <span>{selectedCrit.higherIsBetter ? 'Élevé' : 'Mauvais'}</span>
           </div>
         </div>
       )}

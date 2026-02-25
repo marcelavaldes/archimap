@@ -1,10 +1,11 @@
 'use client';
 
 import { useState } from 'react';
-import { CRITERIA, CRITERION_CATEGORIES, type CriterionCategory } from '@/types/criteria';
+import { CRITERION_CATEGORIES, type CriterionCategory, type Criterion } from '@/types/criteria';
 import { useDebug } from '@/lib/debug/DebugContext';
 
 interface SidebarProps {
+  criteria: Record<string, Criterion> | null;
   selectedCriterion: string | null;
   onCriterionSelect: (criterionId: string | null) => void;
   activeLayers: string[];
@@ -12,6 +13,7 @@ interface SidebarProps {
 }
 
 export function Sidebar({
+  criteria,
   selectedCriterion,
   onCriterionSelect,
   activeLayers,
@@ -20,16 +22,22 @@ export function Sidebar({
   const { log } = useDebug();
   const [expandedCategory, setExpandedCategory] = useState<CriterionCategory | null>('climate');
 
-  const criteriaByCategory = Object.values(CRITERIA).reduce(
-    (acc, criterion) => {
-      if (!acc[criterion.category]) {
-        acc[criterion.category] = [];
-      }
-      acc[criterion.category].push(criterion);
-      return acc;
-    },
-    {} as Record<CriterionCategory, typeof CRITERIA[string][]>
-  );
+  const criteriaByCategory = criteria
+    ? Object.values(criteria).reduce(
+        (acc, criterion) => {
+          if (!acc[criterion.category as CriterionCategory]) {
+            acc[criterion.category as CriterionCategory] = [];
+          }
+          acc[criterion.category as CriterionCategory].push(criterion);
+          return acc;
+        },
+        {} as Record<CriterionCategory, Criterion[]>
+      )
+    : ({} as Record<CriterionCategory, Criterion[]>);
+
+  const selectedCrit = selectedCriterion && criteria?.[selectedCriterion]
+    ? criteria[selectedCriterion]
+    : null;
 
   return (
     <aside className="w-72 border-r border-border bg-background overflow-y-auto">
@@ -37,6 +45,10 @@ export function Sidebar({
         <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-4">
           Critères
         </h2>
+
+        {!criteria && (
+          <div className="text-sm text-muted-foreground animate-pulse">Chargement...</div>
+        )}
 
         <div className="space-y-2">
           {(Object.keys(CRITERION_CATEGORIES) as CriterionCategory[]).map((category) => (
@@ -105,24 +117,24 @@ export function Sidebar({
         </div>
       </div>
 
-      {selectedCriterion && CRITERIA[selectedCriterion] && (
+      {selectedCrit && (
         <div className="p-4 border-t border-border">
-          <h3 className="text-sm font-semibold mb-2">{CRITERIA[selectedCriterion].name}</h3>
+          <h3 className="text-sm font-semibold mb-2">{selectedCrit.name}</h3>
           <p className="text-xs text-muted-foreground mb-2">
-            {CRITERIA[selectedCriterion].description}
+            {selectedCrit.description}
           </p>
           <div className="flex items-center gap-2 text-xs text-muted-foreground">
-            <span>Source: {CRITERIA[selectedCriterion].source}</span>
+            <span>Source: {selectedCrit.source}</span>
             <span>•</span>
-            <span>Mis à jour: {CRITERIA[selectedCriterion].lastUpdated}</span>
+            <span>Mis à jour: {selectedCrit.lastUpdated}</span>
           </div>
           <div className="mt-3 h-4 rounded-full overflow-hidden" style={{
-            background: `linear-gradient(90deg, ${CRITERIA[selectedCriterion].colorScale.low}, ${CRITERIA[selectedCriterion].colorScale.mid}, ${CRITERIA[selectedCriterion].colorScale.high})`,
+            background: `linear-gradient(90deg, ${selectedCrit.colorScale.low}, ${selectedCrit.colorScale.mid}, ${selectedCrit.colorScale.high})`,
           }}>
           </div>
           <div className="flex justify-between text-xs text-muted-foreground mt-1">
-            <span>{CRITERIA[selectedCriterion].higherIsBetter ? 'Faible' : 'Bon'}</span>
-            <span>{CRITERIA[selectedCriterion].higherIsBetter ? 'Élevé' : 'Mauvais'}</span>
+            <span>{selectedCrit.higherIsBetter ? 'Faible' : 'Bon'}</span>
+            <span>{selectedCrit.higherIsBetter ? 'Élevé' : 'Mauvais'}</span>
           </div>
         </div>
       )}

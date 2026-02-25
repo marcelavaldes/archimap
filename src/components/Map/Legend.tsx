@@ -1,18 +1,19 @@
 'use client';
 
-import { CRITERIA, Criterion } from '@/types/criteria';
+import type { Criterion } from '@/types/criteria';
 import { generateColorStops } from '@/lib/map/colors';
 
 interface LegendProps {
   criterionId: string | null;
+  criteria?: Record<string, Criterion> | null;
 }
 
-export function Legend({ criterionId }: LegendProps) {
-  if (!criterionId || !CRITERIA[criterionId]) {
+export function Legend({ criterionId, criteria }: LegendProps) {
+  if (!criterionId || !criteria?.[criterionId]) {
     return null;
   }
 
-  const criterion = CRITERIA[criterionId];
+  const criterion = criteria[criterionId];
   const colorStops = generateColorStops(criterion, 10);
 
   // Create CSS gradient from color stops

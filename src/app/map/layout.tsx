@@ -2,6 +2,8 @@
 
 import { useState, useCallback, createContext, useContext, ReactNode } from 'react';
 import type { Map } from 'maplibre-gl';
+import type { Criterion } from '@/types/criteria';
+import { useCriteria } from '@/lib/criteria';
 import { Header, Sidebar } from '@/components/Layout';
 import { DebugProvider } from '@/lib/debug/DebugContext';
 import { DebugPanel } from '@/components/Debug/DebugPanel';
@@ -16,6 +18,7 @@ interface MapContextType {
   setSelectedCriterion: (criterion: string | null) => void;
   activeLayers: string[];
   toggleLayer: (criterionId: string) => void;
+  criteria: Record<string, Criterion> | null;
 }
 
 const MapContext = createContext<MapContextType | null>(null);
@@ -33,6 +36,7 @@ export default function MapLayout({ children }: { children: ReactNode }) {
   const [map, setMap] = useState<Map | null>(null);
   const [activeLayers, setActiveLayers] = useState<string[]>([]);
   const [selectedCriterion, setSelectedCriterion] = useState<string | null>(null);
+  const { criteria } = useCriteria();
 
   const handleDarkModeToggle = useCallback((isDark: boolean) => {
     setDarkMode(isDark);
@@ -55,6 +59,7 @@ export default function MapLayout({ children }: { children: ReactNode }) {
     setSelectedCriterion,
     activeLayers,
     toggleLayer,
+    criteria,
   };
 
   return (
@@ -65,6 +70,7 @@ export default function MapLayout({ children }: { children: ReactNode }) {
 
           <div className="flex flex-1 overflow-hidden">
             <Sidebar
+              criteria={criteria}
               selectedCriterion={selectedCriterion}
               onCriterionSelect={setSelectedCriterion}
               activeLayers={activeLayers}
@@ -85,7 +91,7 @@ export default function MapLayout({ children }: { children: ReactNode }) {
               {/* Map status + Build version */}
               <div className="absolute bottom-4 right-4 bg-background/90 backdrop-blur-sm border border-border rounded-lg px-3 py-2 text-xs text-muted-foreground z-30">
                 <div>{map ? 'Carte prête' : 'Initialisation...'}</div>
-                <div className="text-[10px] opacity-60 mt-1">Build: 2026-02-23 22:45 UTC</div>
+                <div className="text-[10px] opacity-60 mt-1">Build: {process.env.NEXT_PUBLIC_BUILD_TIME ? new Date(process.env.NEXT_PUBLIC_BUILD_TIME).toLocaleString('fr-FR', { timeZone: 'UTC' }) : 'dev'}</div>
               </div>
 
               <DebugPanel />

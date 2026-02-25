@@ -9,7 +9,7 @@ import {
   ResponsiveContainer,
   Tooltip,
 } from 'recharts';
-import { CRITERIA } from '@/types/criteria';
+import type { Criterion } from '@/types/criteria';
 
 interface CriterionScore {
   criterionId: string;
@@ -21,10 +21,11 @@ interface CriterionScore {
 
 interface CriteriaRadarProps {
   scores: CriterionScore[];
+  criteria?: Record<string, Criterion>;
   className?: string;
 }
 
-export function CriteriaRadar({ scores, className = '' }: CriteriaRadarProps) {
+export function CriteriaRadar({ scores, criteria, className = '' }: CriteriaRadarProps) {
   if (scores.length === 0) {
     return (
       <div className={`flex items-center justify-center h-64 text-muted-foreground ${className}`}>
@@ -61,7 +62,7 @@ export function CriteriaRadar({ scores, className = '' }: CriteriaRadarProps) {
             content={({ active, payload }) => {
               if (!active || !payload || payload.length === 0) return null;
               const data = payload[0].payload as CriterionScore;
-              const criterion = CRITERIA[data.criterionId];
+              const criterion = criteria?.[data.criterionId];
 
               return (
                 <div className="bg-background border border-border rounded-lg shadow-lg p-3 text-sm">
@@ -86,15 +87,16 @@ export function CriteriaRadar({ scores, className = '' }: CriteriaRadarProps) {
 
 // Helper to build scores from criterion_values API response
 export function buildRadarScores(
-  criterionValues: Record<string, { value: number; score: number }> | null
+  criterionValues: Record<string, { value: number; score: number }> | null,
+  criteria?: Record<string, Criterion>
 ): CriterionScore[] {
-  if (!criterionValues) return [];
+  if (!criterionValues || !criteria) return [];
 
   return Object.entries(criterionValues)
-    .filter(([criterionId]) => CRITERIA[criterionId])
+    .filter(([criterionId]) => criteria[criterionId])
     .map(([criterionId, data]) => ({
       criterionId,
-      label: CRITERIA[criterionId].name,
+      label: criteria[criterionId].name,
       score: data.score,
       value: data.value,
       fullMark: 100,

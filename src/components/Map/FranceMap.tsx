@@ -4,7 +4,7 @@ import { useEffect, useRef, useState, useCallback } from 'react';
 import maplibregl, { Map, NavigationControl, ScaleControl, GeoJSONSource, MapMouseEvent, MapLayerMouseEvent, LngLatBounds } from 'maplibre-gl';
 import { DEFAULT_MAP_OPTIONS, BASE_MAP_STYLE, DARK_MAP_STYLE, ZOOM_THRESHOLDS, FRANCE_CENTER } from '@/lib/map/config';
 import { GeoFeatureProperties, AdminLevel } from '@/types/geo';
-import { CRITERIA } from '@/types/criteria';
+import type { Criterion } from '@/types/criteria';
 import { generateColorStops } from '@/lib/map/colors';
 import { Tooltip } from './Tooltip';
 import { DetailPanel } from './DetailPanel';
@@ -16,11 +16,12 @@ interface FranceMapProps {
   onMapLoad?: (map: Map) => void;
   className?: string;
   selectedCriterion?: string | null;
+  criteria?: Record<string, Criterion> | null;
 }
 
 type AdminLevelPlural = 'regions' | 'departements' | 'communes';
 
-export function FranceMap({ darkMode = false, onMapLoad, className = '', selectedCriterion = null }: FranceMapProps) {
+export function FranceMap({ darkMode = false, onMapLoad, className = '', selectedCriterion = null, criteria = null }: FranceMapProps) {
   const mapContainer = useRef<HTMLDivElement>(null);
   const map = useRef<Map | null>(null);
   const [isLoaded, setIsLoaded] = useState(false);
@@ -135,7 +136,7 @@ export function FranceMap({ darkMode = false, onMapLoad, className = '', selecte
     const defaultColor = '#2196F3';
 
     // If no criterion selected, use simple hover/default colors
-    if (!criterionId || !CRITERIA[criterionId]) {
+    if (!criterionId || !criteria?.[criterionId]) {
       return [
         'case',
         ['boolean', ['feature-state', 'hover'], false],
@@ -144,11 +145,10 @@ export function FranceMap({ darkMode = false, onMapLoad, className = '', selecte
       ];
     }
 
-    const criterion = CRITERIA[criterionId];
+    const criterion = criteria[criterionId];
     const colorStops = generateColorStops(criterion, 10);
 
     // Build interpolate expression with null check
-    // ['case', ['==', ['get', 'criterionScore'], null], noDataColor, interpolate...]
     const interpolateExpr: maplibregl.ExpressionSpecification = [
       'interpolate',
       ['linear'],
@@ -170,7 +170,7 @@ export function FranceMap({ darkMode = false, onMapLoad, className = '', selecte
       // Use choropleth interpolation
       interpolateExpr,
     ];
-  }, []);
+  }, [criteria]);
 
   // Add or update GeoJSON layer
   const updateGeoJSONLayer = useCallback(async (
@@ -538,7 +538,7 @@ export function FranceMap({ darkMode = false, onMapLoad, className = '', selecte
       )}
 
       {/* Legend */}
-      <Legend criterionId={selectedCriterion} />
+      <Legend criterionId={selectedCriterion} criteria={criteria} />
 
       {/* Tooltip */}
       <Tooltip
@@ -546,6 +546,7 @@ export function FranceMap({ darkMode = false, onMapLoad, className = '', selecte
         x={tooltipPosition.x}
         y={tooltipPosition.y}
         criterionId={selectedCriterion}
+        criteria={criteria}
       />
 
       {/* Detail panel */}
@@ -553,6 +554,7 @@ export function FranceMap({ darkMode = false, onMapLoad, className = '', selecte
         feature={selectedFeature}
         onClose={() => setSelectedFeature(null)}
         criterionId={selectedCriterion}
+        criteria={criteria}
       />
     </div>
   );

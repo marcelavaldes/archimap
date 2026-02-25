@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { GeoFeatureProperties } from '@/types/geo';
-import { CRITERIA, Criterion } from '@/types/criteria';
+import type { Criterion } from '@/types/criteria';
 import { interpolateColor } from '@/lib/map/colors';
 import { CriteriaRadar, buildRadarScores } from '@/components/Charts';
 import { X, Loader2 } from 'lucide-react';
@@ -25,9 +25,10 @@ interface DetailPanelProps {
   feature: GeoFeatureProperties | null;
   onClose: () => void;
   criterionId?: string | null;
+  criteria?: Record<string, Criterion> | null;
 }
 
-export function DetailPanel({ feature, onClose, criterionId }: DetailPanelProps) {
+export function DetailPanel({ feature, onClose, criterionId, criteria }: DetailPanelProps) {
   const [communeData, setCommuneData] = useState<CommuneData | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -75,7 +76,7 @@ export function DetailPanel({ feature, onClose, criterionId }: DetailPanelProps)
   };
 
   // Build radar scores from fetched data
-  const radarScores = communeData ? buildRadarScores(communeData.criteria) : [];
+  const radarScores = communeData ? buildRadarScores(communeData.criteria, criteria ?? undefined) : [];
 
   return (
     <>
@@ -153,13 +154,13 @@ export function DetailPanel({ feature, onClose, criterionId }: DetailPanelProps)
           )}
 
           {/* Selected Criterion Section */}
-          {criterionId && CRITERIA[criterionId] && (
+          {criterionId && criteria?.[criterionId] && (
             <section>
               <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-3">
-                {CRITERIA[criterionId].name}
+                {criteria[criterionId].name}
               </h3>
               <CriterionDisplay
-                criterion={CRITERIA[criterionId]}
+                criterion={criteria[criterionId]}
                 value={communeData?.criteria[criterionId]?.value ?? feature.criterionValue as number | undefined}
                 score={communeData?.criteria[criterionId]?.score ?? feature.criterionScore as number | undefined}
                 rank={communeData?.criteria[criterionId]?.rankNational ?? feature.criterionRank as number | undefined}
@@ -175,7 +176,7 @@ export function DetailPanel({ feature, onClose, criterionId }: DetailPanelProps)
               </h3>
               <div className="space-y-4">
                 {Object.entries(communeData.criteria).map(([critId, data]) => {
-                  const criterion = CRITERIA[critId];
+                  const criterion = criteria?.[critId];
                   if (!criterion) return null;
 
                   const isSelected = critId === criterionId;

@@ -2,16 +2,17 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { GeoFeatureProperties } from '@/types/geo';
-import { CRITERIA, Criterion } from '@/types/criteria';
+import type { Criterion } from '@/types/criteria';
 
 interface TooltipProps {
   feature: GeoFeatureProperties | null;
   x: number;
   y: number;
   criterionId?: string | null;
+  criteria?: Record<string, Criterion> | null;
 }
 
-export function Tooltip({ feature, x, y, criterionId }: TooltipProps) {
+export function Tooltip({ feature, x, y, criterionId, criteria }: TooltipProps) {
   const tooltipRef = useRef<HTMLDivElement>(null);
   const [position, setPosition] = useState({ x, y });
 
@@ -59,7 +60,7 @@ export function Tooltip({ feature, x, y, criterionId }: TooltipProps) {
   };
 
   // Get criterion info if available
-  const criterion: Criterion | undefined = criterionId ? CRITERIA[criterionId] : undefined;
+  const criterion: Criterion | undefined = criterionId ? criteria?.[criterionId] : undefined;
   const criterionValue = feature.criterionValue as number | undefined;
   const criterionScore = feature.criterionScore as number | undefined;
 

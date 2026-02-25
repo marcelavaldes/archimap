@@ -5,7 +5,7 @@ import { FranceMap } from './FranceMap';
 import { useMapContext } from '@/app/map/layout';
 
 export function MapView() {
-  const { darkMode, setMap, selectedCriterion } = useMapContext();
+  const { darkMode, setMap, selectedCriterion, criteria } = useMapContext();
 
   // Handle map load
   const handleMapLoad = useCallback((map: import('maplibre-gl').Map) => {
@@ -18,6 +18,7 @@ export function MapView() {
       darkMode={darkMode}
       onMapLoad={handleMapLoad}
       selectedCriterion={selectedCriterion}
+      criteria={criteria}
     />
   );
 }

@@ -6,18 +6,22 @@ import {
   useState,
   useCallback,
   useEffect,
+  useRef,
+  useMemo,
   type ReactNode,
 } from 'react';
 import type { DebugLogEntry, DataQualitySummary, LogCategory, LogSeverity } from './types';
 
 const MAX_LOGS = 500;
 
+type LogFn = (category: LogCategory, severity: LogSeverity, message: string, detail?: unknown) => void;
+
 interface DebugContextType {
   logs: DebugLogEntry[];
   dataQuality: DataQualitySummary;
   isOpen: boolean;
   setIsOpen: (open: boolean) => void;
-  log: (category: LogCategory, severity: LogSeverity, message: string, detail?: unknown) => void;
+  log: LogFn;
   updateDataQuality: (partial: Partial<DataQualitySummary>) => void;
   clearLogs: () => void;
 }
@@ -41,8 +45,16 @@ export function DebugProvider({ children }: { children: ReactNode }) {
   const [dataQuality, setDataQuality] = useState<DataQualitySummary>(defaultDataQuality);
   const [isOpen, setIsOpen] = useState(false);
 
-  const log = useCallback(
-    (category: LogCategory, severity: LogSeverity, message: string, detail?: unknown) => {
+  // Use ref for setLogs to avoid stale closures in callbacks
+  const setLogsRef = useRef(setLogs);
+  setLogsRef.current = setLogs;
+
+  const setDataQualityRef = useRef(setDataQuality);
+  setDataQualityRef.current = setDataQuality;
+
+  // Stable log function that never changes identity
+  const log = useCallback<LogFn>(
+    (category, severity, message, detail) => {
       const entry: DebugLogEntry = {
         id: String(++logCounter),
         timestamp: Date.now(),
@@ -51,7 +63,8 @@ export function DebugProvider({ children }: { children: ReactNode }) {
         message,
         detail,
       };
-      setLogs((prev) => {
+      console.log(`[DBG][${category}][${severity}] ${message}`, detail !== undefined ? detail : '');
+      setLogsRef.current((prev) => {
         const next = [...prev, entry];
         return next.length > MAX_LOGS ? next.slice(next.length - MAX_LOGS) : next;
       });
@@ -60,12 +73,12 @@ export function DebugProvider({ children }: { children: ReactNode }) {
   );
 
   const updateDataQuality = useCallback((partial: Partial<DataQualitySummary>) => {
-    setDataQuality((prev) => ({ ...prev, ...partial }));
+    setDataQualityRef.current((prev) => ({ ...prev, ...partial }));
   }, []);
 
   const clearLogs = useCallback(() => {
-    setLogs([]);
-    setDataQuality(defaultDataQuality);
+    setLogsRef.current([]);
+    setDataQualityRef.current(defaultDataQuality);
   }, []);
 
   // Ctrl+Shift+D toggle
@@ -80,10 +93,14 @@ export function DebugProvider({ children }: { children: ReactNode }) {
     return () => window.removeEventListener('keydown', handler);
   }, []);
 
+  // Memoize context value to prevent unnecessary consumer re-renders
+  const value = useMemo<DebugContextType>(
+    () => ({ logs, dataQuality, isOpen, setIsOpen, log, updateDataQuality, clearLogs }),
+    [logs, dataQuality, isOpen, log, updateDataQuality, clearLogs]
+  );
+
   return (
-    <DebugContext.Provider
-      value={{ logs, dataQuality, isOpen, setIsOpen, log, updateDataQuality, clearLogs }}
-    >
+    <DebugContext.Provider value={value}>
       {children}
     </DebugContext.Provider>
   );
