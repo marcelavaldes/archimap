@@ -17,6 +17,32 @@ if (!SUPABASE_SERVICE_KEY) {
 export const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
 
 /**
+ * Metropolitan France + DOM has ~34,900 communes as of 2026; INSEE mergers
+ * shift that by a few dozen every January, so this is a floor, not an exact
+ * figure. PostgREST caps an unbounded select at 1,000 rows by default — if
+ * pagination ever regresses, the fetched count will fall far short of this
+ * floor and ingestion must abort rather than silently score against a
+ * fraction of the country.
+ */
+export const EXPECTED_MIN_COMMUNES = 30000;
+
+/** Read every row of a paginated PostgREST query by following .range() pages until exhausted. */
+async function fetchAllRows<T>(
+  query: (from: number, to: number) => PromiseLike<{ data: T[] | null; error: { message: string } | null }>
+): Promise<T[]> {
+  const PAGE = 1000;
+  const out: T[] = [];
+  for (let from = 0; ; from += PAGE) {
+    const { data, error } = await query(from, from + PAGE - 1);
+    if (error) throw new Error(error.message);
+    if (!data?.length) break;
+    out.push(...data);
+    if (data.length < PAGE) break;
+  }
+  return out;
+}
+
+/**
  * Normalize values to scores using percentile-clipped min-max (2nd-98th percentile)
  * This handles outliers by clipping extreme values
  */
@@ -121,18 +147,19 @@ export async function upsertCriterionValues(
  * Get all commune codes from database
  */
 export async function getCommuneCodes(): Promise<Set<string>> {
-  const codes = new Set<string>();
+  const rows = await fetchAllRows<{ code: string }>((from, to) =>
+    supabase.from('communes').select('code').range(from, to)
+  );
 
-  const { data, error } = await supabase
-    .from('communes')
-    .select('code');
-
-  if (error) {
-    console.error('Error fetching commune codes:', error.message);
-    return codes;
+  if (rows.length < EXPECTED_MIN_COMMUNES) {
+    throw new Error(
+      `Commune count too low: fetched ${rows.length}, expected at least ${EXPECTED_MIN_COMMUNES}. ` +
+        `Refusing to ingest against a truncated reference population — check pagination and the communes table.`
+    );
   }
 
-  data?.forEach((row) => codes.add(row.code));
+  const codes = new Set<string>();
+  rows.forEach((row) => codes.add(row.code));
   return codes;
 }
 
