@@ -3,6 +3,14 @@
 
 SET search_path TO public, extensions;
 
+-- The initial schema created a (VARCHAR, VARCHAR) -> JSON version of this
+-- function. CREATE OR REPLACE below does not replace it: a different argument
+-- type list makes a new overload. Without this DROP a fresh replay ends up with
+-- both, and PostgREST cannot choose between them — every call to
+-- /api/geo/[level] fails with PGRST203. Mirrors the DROP-then-CREATE pattern
+-- 20260223200000_fix_viewport_search_functions.sql uses for the other two RPCs.
+DROP FUNCTION IF EXISTS get_geojson_by_level(VARCHAR, VARCHAR);
+
 CREATE OR REPLACE FUNCTION get_geojson_by_level(
   p_level TEXT,
   p_parent_code TEXT DEFAULT NULL

@@ -7,6 +7,9 @@ SET search_path TO public, extensions;
 -- Enable extensions
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 CREATE EXTENSION IF NOT EXISTS "postgis" SCHEMA extensions;
+-- Trigram extension for fuzzy commune-name search (gin_trgm_ops, similarity()).
+-- Must be created before idx_communes_nom_trgm below, or a fresh replay fails.
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
 
 -- ============================================
 -- GEOGRAPHIC TABLES
@@ -56,9 +59,6 @@ CREATE INDEX idx_communes_departement ON communes(code_departement);
 CREATE INDEX idx_communes_region ON communes(code_region);
 CREATE INDEX idx_communes_nom ON communes(nom);
 CREATE INDEX idx_communes_nom_trgm ON communes USING GIN(nom gin_trgm_ops);
-
--- Enable trigram extension for fuzzy search
-CREATE EXTENSION IF NOT EXISTS pg_trgm;
 
 -- ============================================
 -- CRITERION DATA
