@@ -176,7 +176,7 @@ export function CriterionForm({ form, onChange, onSubmit, saving, error, isNew }
           />
         </div>
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">Ordre d'affichage</label>
+          <label className="block text-sm font-medium text-gray-700 mb-1">Ordre d&apos;affichage</label>
           <input
             type="number"
             value={form.display_order}
@@ -208,7 +208,7 @@ export function CriterionForm({ form, onChange, onSubmit, saving, error, isNew }
           />
         </div>
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">Type d'ingestion</label>
+          <label className="block text-sm font-medium text-gray-700 mb-1">Type d&apos;ingestion</label>
           <select
             value={form.ingestion_type}
             onChange={(e) => update('ingestion_type', e.target.value)}

@@ -2,8 +2,9 @@
  * Admin auth flow tests — middleware gate, login handler and verifyAdmin,
  * exercised over real NextRequest objects rather than mocks.
  *
- * Dependency-free and self-running so they work before this repo has a test
- * runner: `bun tests/admin-auth-flow.test.ts` (or `bun run test:auth`).
+ * Dependency-free, self-running assertions (predates `bun test`; still runs
+ * standalone via `bun tests/admin-auth-flow.test.ts` or `bun run test:auth`,
+ * and is also picked up by `bun test`). Throws if any assertion failed.
  */
 import { NextRequest } from 'next/server';
 import { middleware, config } from '@/middleware';
@@ -108,4 +109,6 @@ ok('no password: login -> 500',
    (await login(req('/api/admin/login', { method: 'POST', body: JSON.stringify({ password: 'x' }) }))).status === 500);
 
 console.log(`\n${pass} passed, ${fail} failed`);
-process.exit(fail === 0 ? 0 : 1);
+if (fail > 0) {
+  throw new Error(`${fail} assertion(s) failed`);
+}

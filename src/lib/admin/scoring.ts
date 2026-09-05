@@ -28,6 +28,12 @@ export function normalizeToScore(
 
 /**
  * Calculate national ranks for values.
+ *
+ * Uses competition ranking (1, 2, 2, 4): communes tied on the raw value
+ * share the same rank, and the next distinct value skips ahead accordingly.
+ * Assigning tied communes different ranks (the previous `index + 1`
+ * behaviour) presented false precision — this is a relocation tool, and two
+ * communes with an identical value should not appear as 4th and 5th.
  */
 export function calculateRanks(
   values: Map<string, number>,
@@ -40,11 +46,44 @@ export function calculateRanks(
   });
 
   const ranks = new Map<string, number>();
-  entries.forEach(([code], index) => {
-    ranks.set(code, index + 1);
+  let previousValue: number | null = null;
+  let previousRank = 0;
+  entries.forEach(([code, value], index) => {
+    const rank = value === previousValue ? previousRank : index + 1;
+    ranks.set(code, rank);
+    previousValue = value;
+    previousRank = rank;
   });
 
   return ranks;
+}
+
+/**
+ * Metropolitan France + DOM has ~34,900 communes as of 2026; INSEE mergers
+ * shift that by a few dozen every January, so this is a floor, not an exact
+ * figure. PostgREST caps an unbounded select at 1,000 rows by default — if
+ * pagination ever regresses, the fetched count will fall far short of this
+ * floor and ingestion must abort rather than silently score against a
+ * fraction of the country.
+ */
+export const EXPECTED_MIN_COMMUNES = 30000;
+
+/**
+ * Guard against ingesting against a truncated commune reference set. Shared
+ * by both getCommuneCodes() implementations (src/lib/admin/ingestion-runners.ts
+ * and scripts/ingest/lib/utils.ts) so the pagination regression this guards
+ * against only needs to be tested once.
+ */
+export function assertSufficientCommuneCount(
+  count: number,
+  min: number = EXPECTED_MIN_COMMUNES
+): void {
+  if (count < min) {
+    throw new Error(
+      `Commune count too low: fetched ${count}, expected at least ${min}. ` +
+        `Refusing to ingest against a truncated reference population — check pagination and the communes table.`
+    );
+  }
 }
 
 export interface CriterionRecord {

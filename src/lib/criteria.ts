@@ -42,11 +42,11 @@ export function useCriteria(): {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (cachedCriteria) {
-      setCriteria(cachedCriteria);
-      setLoading(false);
-      return;
-    }
+    // Initial state above already seeds `criteria`/`loading` from the module
+    // cache when present, so re-setting them here on mount only forced an
+    // extra, unnecessary render pass (the cascading-render pattern the lint
+    // rule flags). Nothing to do in that case.
+    if (cachedCriteria) return;
 
     fetchCriteriaFromAPI()
       .then(data => {

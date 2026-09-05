@@ -1,9 +1,9 @@
 /**
  * Admin session token tests.
  *
- * Dependency-free and self-running so they work before this repo has a test
- * runner: `bun tests/admin-session.test.ts` (or `bun run test:auth`).
- * Exits non-zero on the first failing assertion set.
+ * Dependency-free, self-running assertions (predates `bun test`; still runs
+ * standalone via `bun tests/admin-session.test.ts` or `bun run test:auth`,
+ * and is also picked up by `bun test`). Throws if any assertion failed.
  */
 import { createHmac, createHash } from 'node:crypto';
 import {
@@ -115,4 +115,6 @@ ok('rejects null header', readTokenFromHeader(null) === null);
 ok('cookie name unchanged', ADMIN_COOKIE === 'admin_token');
 
 console.log(`\n${pass} passed, ${fail} failed`);
-process.exit(fail === 0 ? 0 : 1);
+if (fail > 0) {
+  throw new Error(`${fail} assertion(s) failed`);
+}

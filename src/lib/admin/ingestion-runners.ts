@@ -10,6 +10,7 @@ import {
   normalizeToScore,
   calculateRanks,
   upsertCriterionValues,
+  assertSufficientCommuneCount,
   type CriterionRecord,
 } from './scoring';
 
@@ -28,16 +29,6 @@ export interface IngestionResult {
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
-
-/**
- * Metropolitan France + DOM has ~34,900 communes as of 2026; INSEE mergers
- * shift that by a few dozen every January, so this is a floor, not an exact
- * figure. PostgREST caps an unbounded select at 1,000 rows by default — if
- * pagination ever regresses, the fetched count will fall far short of this
- * floor and ingestion must abort rather than silently score against a
- * fraction of the country.
- */
-const EXPECTED_MIN_COMMUNES = 30000;
 
 /** Read every row of a paginated PostgREST query by following .range() pages until exhausted. */
 async function fetchAllRows<T>(
@@ -86,12 +77,7 @@ async function getCommuneCodes(): Promise<Set<string>> {
     supabase.from('communes').select('code').range(from, to)
   );
 
-  if (rows.length < EXPECTED_MIN_COMMUNES) {
-    throw new Error(
-      `Commune count too low: fetched ${rows.length}, expected at least ${EXPECTED_MIN_COMMUNES}. ` +
-        `Refusing to ingest against a truncated reference population — check pagination and the communes table.`
-    );
-  }
+  assertSufficientCommuneCount(rows.length);
 
   const codes = new Set<string>();
   rows.forEach((row) => codes.add(row.code));

@@ -213,7 +213,7 @@ export function SearchBar({ className = '', onSelect }: SearchBarProps) {
       {/* No results message */}
       {isOpen && query.length >= 2 && results.length === 0 && !loading && (
         <div className="absolute top-full left-0 right-0 mt-1 bg-background border border-border rounded-lg shadow-lg p-4 text-center text-sm text-muted-foreground z-50">
-          Aucune commune trouvée pour "{query}"
+          Aucune commune trouvée pour &quot;{query}&quot;
         </div>
       )}
     </div>

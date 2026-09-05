@@ -70,7 +70,11 @@ export function normalizeToScore(
 }
 
 /**
- * Calculate national ranks for values
+ * Calculate national ranks for values.
+ *
+ * Uses competition ranking (1, 2, 2, 4): communes tied on the raw value
+ * share the same rank, and the next distinct value skips ahead accordingly.
+ * Kept in sync with src/lib/admin/scoring.ts's calculateRanks().
  */
 export function calculateRanks(
   values: Map<string, number>,
@@ -84,8 +88,13 @@ export function calculateRanks(
   });
 
   const ranks = new Map<string, number>();
-  entries.forEach(([code], index) => {
-    ranks.set(code, index + 1);
+  let previousValue: number | null = null;
+  let previousRank = 0;
+  entries.forEach(([code, value], index) => {
+    const rank = value === previousValue ? previousRank : index + 1;
+    ranks.set(code, rank);
+    previousValue = value;
+    previousRank = rank;
   });
 
   return ranks;
