@@ -8,7 +8,7 @@ export const runtime = 'nodejs';
  * GET /api/admin/criteria — List all criteria with coverage stats
  */
 export async function GET(request: NextRequest) {
-  const authError = verifyAdmin(request);
+  const authError = await verifyAdmin(request);
   if (authError) return authError;
 
   try {
@@ -56,7 +56,7 @@ export async function GET(request: NextRequest) {
  * POST /api/admin/criteria — Create a new criterion
  */
 export async function POST(request: NextRequest) {
-  const authError = verifyAdmin(request);
+  const authError = await verifyAdmin(request);
   if (authError) return authError;
 
   try {

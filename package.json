@@ -9,6 +9,7 @@
     "start": "next start",
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
+    "test:auth": "bun tests/admin-session.test.ts && bun tests/admin-auth-flow.test.ts",
     "ingest:geo": "bun run scripts/ingest/geo.ts"
   },
   "dependencies": {

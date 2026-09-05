@@ -8,7 +8,7 @@ export const runtime = 'nodejs';
  * GET /api/admin/dashboard — Aggregate stats for admin dashboard
  */
 export async function GET(request: NextRequest) {
-  const authError = verifyAdmin(request);
+  const authError = await verifyAdmin(request);
   if (authError) return authError;
 
   try {

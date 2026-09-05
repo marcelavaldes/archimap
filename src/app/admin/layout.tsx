@@ -50,7 +50,11 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
       });
 
       if (res.ok) {
-        setAuthenticated(true);
+        // Reload rather than flipping local state: middleware rewrites an
+        // unauthenticated deep link to /admin, so the browser is holding the
+        // dashboard's payload. Reloading re-runs the gate with the new session
+        // cookie and serves the page that was actually requested.
+        window.location.reload();
       } else {
         setLoginError('Mot de passe incorrect');
       }
