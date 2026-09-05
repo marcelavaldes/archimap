@@ -73,38 +73,53 @@ async function ingestTemperatureData() {
 
 ## Normalization Logic
 
-All criterion values are normalized to a 0-100 score using min-max normalization:
+All criterion values are normalized to a 0-100 score using **percentile-clipped min-max**
+(2nd-98th percentile), not fixed per-criterion bounds. A fixed min/max needs to be re-guessed and
+re-tuned by hand for every criterion and silently breaks the moment real-world values drift
+outside the guessed range; percentile clipping derives the range from the data itself and is the
+better choice for skewed distributions like property prices, where a small number of very
+expensive communes would otherwise compress every other commune's score toward one end.
+
+Implementation: `src/lib/admin/scoring.ts` (`normalizeToScore`), with an identical copy in
+`scripts/ingest/lib/utils.ts` for the CLI ingestion path.
 
 ```typescript
-function normalizeScore(
+function normalizeToScore(
   value: number,
-  min: number,
-  max: number,
-  higherIsBetter: boolean = true
+  allValues: number[],
+  higherIsBetter: boolean
 ): number {
-  const normalized = (value - min) / (max - min);
-  const clamped = Math.max(0, Math.min(1, normalized));
-  const score = higherIsBetter ? clamped : 1 - clamped;
-  return Math.round(score * 100);
+  if (allValues.length === 0) return 50;
+
+  const sorted = [...allValues].sort((a, b) => a - b);
+  const p2 = sorted[Math.floor(sorted.length * 0.02)];
+  const p98 = sorted[Math.floor(sorted.length * 0.98)];
+
+  if (p98 === p2) return 50; // degenerate: every value in-range is identical
+
+  let score = ((value - p2) / (p98 - p2)) * 100;
+  score = Math.max(0, Math.min(100, score));
+
+  return higherIsBetter ? Math.round(score) : Math.round(100 - score);
 }
 ```
 
-### Criterion-Specific Parameters
+### Reference population
 
-| Criterion | Min | Max | Higher is Better |
-|-----------|-----|-----|------------------|
-| temperature | 8°C | 18°C | true |
-| sunshine | 1500h | 3000h | true |
-| rainfall | 400mm | 1500mm | false |
-| propertyPrice | 1000€ | 12000€ | false |
-| localTax | 10% | 40% | false |
-| hospitalAccess | 5min | 60min | false |
-| publicTransport | 0 | 100 | true |
-| internetSpeed | 10Mbps | 1000Mbps | true |
-| crimeRate | 10‰ | 100‰ | false |
-| culturalVenues | 0 | 50 | true |
-| employmentRate | 50% | 80% | true |
-| medianIncome | 15000€ | 40000€ | true |
+`allValues` — the population the 2nd/98th percentiles are computed against — is **every commune
+nationally that has a value for that criterion**, not a fixed universal range and not a sample.
+It is built from the paginated, guarded commune fetch (`getCommuneCodes()` in
+`src/lib/admin/ingestion-runners.ts` and its CLI twin), which refuses to proceed if the fetched
+count falls below `EXPECTED_MIN_COMMUNES` (30,000; see `assertSufficientCommuneCount()` in
+`src/lib/admin/scoring.ts`).
+
+This is not an incidental detail: for six months an unpaginated Supabase query silently truncated
+that population to PostgREST's default 1,000-row cap, so every criterion was scored and ranked
+against ~3% of France instead of the whole country, with no error anywhere. The same raw value
+scores differently against a 1,000-commune population than a ~35,000-commune one — the reference
+population is part of the scoring contract, not an implementation detail, which is why it is
+pinned in a regression test (`src/lib/admin/scoring.test.ts`) and named explicitly here rather
+than left implicit.
 
 ## Ranking Calculation
 

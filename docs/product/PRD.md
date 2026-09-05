@@ -4,9 +4,13 @@
 
 **Project:** ArchiMap - Territorial analysis system for comparing locations in France using interactive choropleth maps with overlay layers.
 
-**Users:** Initially personal use (Marcela + Gui), then scalable to consultant architects.
+**Users:** Marcela + Gui, researching where to relocate in France.
 
 **MVP Scope:** All criteria, entire France (35,000+ communes).
+
+> A consultant-facing tier (multi-tenant auth, client profiles, PDF reports) was scoped in an
+> earlier draft of this document and cut on 2026-08-26 for lack of validated demand — see
+> [`DEFERRED.md`](./DEFERRED.md). This document now describes the two-person tool only.
 
 ## Problem Statement
 
@@ -30,19 +34,13 @@ ArchiMap provides an interactive choropleth map of France that:
 2. Allows overlaying multiple criteria simultaneously
 3. Enables hierarchical navigation (France → Region → Department → Commune)
 4. Shows detailed profiles with radar charts for each commune
-5. Supports professional consultants with client profiles and PDF reports
 
 ## Target Users
 
-### Primary: Personal Use
-- **Marcela & Gui** - Couple researching where to relocate in France
+### Marcela & Gui
+- Couple researching where to relocate in France
 - Need: Compare multiple criteria across different regions
 - Pain: No single tool aggregates all relevant data visually
-
-### Secondary: Architect Consultants
-- **Relocation consultants** helping clients find ideal locations
-- Need: Professional reports, client profiles, custom criteria
-- Pain: Manual research across multiple sources, no branded deliverables
 
 ## Key Features
 
@@ -66,12 +64,8 @@ ArchiMap provides an interactive choropleth map of France that:
 - Detail panel with radar chart
 - Deep linking (shareable URLs)
 
-### Phase 4: Consultant Features
-- Multi-tenant authentication (Clerk Organizations)
-- Client profile CRUD
-- Custom criteria creation
-- PDF report generation (Puppeteer)
-- Report archive in Supabase Storage
+Phase 4 (consultant SaaS tier) was scoped here and cut on 2026-08-26 — see
+[`DEFERRED.md`](./DEFERRED.md).
 
 ## Data Model
 
@@ -89,12 +83,16 @@ ArchiMap provides an interactive choropleth map of France that:
 
 ## Success Metrics
 
+These are post-tiling acceptance criteria, not current goals. The tiled vector-tile data layer
+they assume (`foundations-architecture` tasket group) has not shipped yet — see
+`docs/architecture/overview.md`. Today's per-request GeoJSON assembly is not held to these numbers;
+they gate the tiling work, not the current implementation.
+
 | Metric | Target |
 |--------|--------|
 | Initial load | < 3 seconds |
 | Criterion change | < 500ms |
 | Pan/zoom | 60fps constant |
-| PDF generation | < 5 seconds |
 | Bundle size | < 1MB gzipped |
 
 ## Timeline
@@ -102,7 +100,6 @@ ArchiMap provides an interactive choropleth map of France that:
 - **Phase 1:** Weeks 1-4
 - **Phase 2:** Weeks 5-8
 - **Phase 3:** Weeks 9-10
-- **Phase 4:** Weeks 11-14
-- **Production:** Weeks 15-18
 
-Total: 18-20 weeks to full production
+Phase 4 and its associated production timeline were cut with the consultant tier — see
+[`DEFERRED.md`](./DEFERRED.md).
