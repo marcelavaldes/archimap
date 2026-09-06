@@ -3,6 +3,8 @@
 import { useState } from 'react';
 import { CRITERION_CATEGORIES, type CriterionCategory, type Criterion } from '@/types/criteria';
 import { useDebug } from '@/lib/debug/DebugContext';
+import { WeightPanel } from '@/components/Map/WeightPanel';
+import type { MapMode } from '@/app/map/layout';
 
 interface SidebarProps {
   criteria: Record<string, Criterion> | null;
@@ -10,6 +12,11 @@ interface SidebarProps {
   onCriterionSelect: (criterionId: string | null) => void;
   activeLayers: string[];
   onLayerToggle: (criterionId: string) => void;
+  mode: MapMode;
+  onModeChange: (mode: MapMode) => void;
+  weights: Record<string, number>;
+  onWeightChange: (criterionId: string, weight: number) => void;
+  onResetWeights: () => void;
 }
 
 export function Sidebar({
@@ -18,6 +25,11 @@ export function Sidebar({
   onCriterionSelect,
   activeLayers,
   onLayerToggle,
+  mode,
+  onModeChange,
+  weights,
+  onWeightChange,
+  onResetWeights,
 }: SidebarProps) {
   const { log } = useDebug();
   const [expandedCategory, setExpandedCategory] = useState<CriterionCategory | null>('climate');
@@ -42,6 +54,50 @@ export function Sidebar({
   return (
     <aside className="w-72 border-r border-border bg-background overflow-y-auto">
       <div className="p-4">
+        {/* Mode switch. 'single' keeps the original one-criterion view intact;
+            'composite' swaps the picker for weight sliders. */}
+        <div
+          role="tablist"
+          aria-label="Mode de visualisation"
+          className="flex gap-1 p-1 mb-4 bg-secondary/60 rounded-lg"
+        >
+          {([
+            ['single', 'Un critère'],
+            ['composite', 'Pondéré'],
+          ] as const).map(([value, label]) => (
+            <button
+              key={value}
+              role="tab"
+              aria-selected={mode === value}
+              onClick={() => {
+                log('STATE', 'info', `Map mode: ${value}`, { mode: value });
+                onModeChange(value);
+              }}
+              className={`flex-1 text-xs font-medium rounded-md px-2 py-1.5 transition-colors ${
+                mode === value
+                  ? 'bg-background shadow-sm text-foreground'
+                  : 'text-muted-foreground hover:text-foreground'
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+
+        {mode === 'composite' ? (
+          <>
+            <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-3">
+              Pondération
+            </h2>
+            <WeightPanel
+              criteria={criteria}
+              weights={weights}
+              onWeightChange={onWeightChange}
+              onReset={onResetWeights}
+            />
+          </>
+        ) : (
+          <>
         <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-4">
           Critères
         </h2>
@@ -115,9 +171,11 @@ export function Sidebar({
             </div>
           ))}
         </div>
+          </>
+        )}
       </div>
 
-      {selectedCrit && (
+      {mode === 'single' && selectedCrit && (
         <div className="p-4 border-t border-border">
           <h3 className="text-sm font-semibold mb-2">{selectedCrit.name}</h3>
           <p className="text-xs text-muted-foreground mb-2">

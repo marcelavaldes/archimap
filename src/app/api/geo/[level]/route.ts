@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
+import { FIXTURE_MODE, loadFixture, type FixtureScores } from '@/lib/fixture';
 
 export const runtime = 'edge';
 
@@ -37,6 +38,12 @@ export async function GET(
   const parentCode = searchParams.get('parent');
   const criterionId = searchParams.get('criterion');
   const bbox = searchParams.get('bbox'); // "minLng,minLat,maxLng,maxLat"
+
+  // Fixture mode short-circuit — see src/lib/fixture/index.ts. No-op unless
+  // ARCHIMAP_FIXTURE=1, so the Supabase path below is unchanged in production.
+  if (FIXTURE_MODE) {
+    return serveFixture(request, level as AdminLevel, parentCode, criterionId);
+  }
 
   try {
     const supabase = await createClient();
@@ -191,4 +198,67 @@ export async function GET(
       { status: 500 }
     );
   }
+}
+
+/**
+ * Serve `level` from public/fixtures/, mirroring the real route's response
+ * shape — same feature ids, same criterionValue/criterionScore/criterionRank
+ * property names, same X-Debug-* headers — so the client cannot tell the
+ * difference and no client code branches on fixture mode.
+ */
+async function serveFixture(
+  request: NextRequest,
+  level: AdminLevel,
+  parentCode: string | null,
+  criterionId: string | null
+): Promise<NextResponse> {
+  if (level === 'communes' && !parentCode) {
+    return NextResponse.json(
+      { error: 'Communes level requires either "parent" (departement code) or "bbox" parameter to prevent timeout' },
+      { status: 400 }
+    );
+  }
+
+  const file =
+    level === 'communes' ? `geo/communes-${parentCode}.geojson` : `geo/${level}.geojson`;
+
+  let data: GeoJSONFeatureCollection;
+  try {
+    data = await loadFixture<GeoJSONFeatureCollection>(request, file);
+  } catch {
+    // A département outside the fixture's 10 is an empty collection, not an
+    // error: the map walks a fixed list and one gap should not fail the load.
+    data = { type: 'FeatureCollection', features: [] };
+  }
+
+  let enrichedCount = 0;
+  if (criterionId && data.features.length > 0) {
+    const scores = await loadFixture<FixtureScores>(request, 'scores.json');
+    data.features = data.features.map((feature) => {
+      const entry = scores[feature.id]?.[criterionId];
+      if (entry) enrichedCount++;
+      return {
+        ...feature,
+        properties: {
+          ...feature.properties,
+          criterionValue: entry?.value,
+          criterionScore: entry?.score,
+          criterionRank: entry?.rank,
+        },
+      };
+    });
+  }
+
+  const headers = new Headers();
+  headers.set('Content-Type', 'application/json');
+  headers.set('Cache-Control', 'no-store');
+  headers.set('X-Archimap-Fixture', '1');
+  headers.set('X-Debug-Feature-Count', String(data.features.length));
+  headers.set('X-Debug-Level', level);
+  if (criterionId) {
+    headers.set('X-Debug-Criterion', criterionId);
+    headers.set('X-Debug-Enriched-Count', String(enrichedCount));
+  }
+
+  return new NextResponse(JSON.stringify(data), { headers });
 }

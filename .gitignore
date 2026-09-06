@@ -43,3 +43,9 @@ next-env.d.ts
 
 # generated SQL files (large)
 scripts/ingest/sql/
+
+# generated dev fixture (credential-free /map, see scripts/fixture/build-fixture.ts)
+/public/fixtures/
+
+# screenshots from scripts/dev/screenshot-map.mjs
+/.screenshots/

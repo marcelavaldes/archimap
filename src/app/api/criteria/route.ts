@@ -1,12 +1,22 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
+import { FIXTURE_MODE, loadFixture } from '@/lib/fixture';
 
 export const runtime = 'nodejs';
 
 /**
  * GET /api/criteria — Public endpoint returning enabled criteria (cached 5min)
  */
-export async function GET() {
+export async function GET(request: Request) {
+  // Fixture mode short-circuit — see src/lib/fixture/index.ts. No-op unless
+  // ARCHIMAP_FIXTURE=1, so the Supabase path below is unchanged in production.
+  if (FIXTURE_MODE) {
+    const criteria = await loadFixture<Record<string, CriterionResponse>>(request, 'criteria.json');
+    return NextResponse.json(criteria, {
+      headers: { 'Cache-Control': 'no-store', 'X-Archimap-Fixture': '1' },
+    });
+  }
+
   try {
     const supabase = await createClient();
 

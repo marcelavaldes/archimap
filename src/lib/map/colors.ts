@@ -84,3 +84,63 @@ export function generateColorStops(criterion: Criterion, steps: number = 10): [n
   }
   return stops;
 }
+
+/**
+ * Composite colour ramp — authored GOOD-TO-BAD, unlike the per-criterion
+ * palettes above.
+ *
+ * The three-place invariant documented on interpolateColor() applies to single
+ * criteria only. A weighted composite has no `higherIsBetter` and no
+ * raw-ordered palette: its input is a weighted mean of already-flipped scores,
+ * so it is in 100-is-good space and must be coloured directly from it. Routing
+ * a composite through interpolateColor() would apply that function's
+ * re-inversion to a score that was never inverted, flipping the map for
+ * lower-is-better inputs with no error — the same silent failure the comment
+ * above guards against, arriving from the other direction.
+ *
+ * Hence: separate stops, separate function, and no `Criterion` argument — there
+ * is nothing on a Criterion this ramp is allowed to consult.
+ *
+ * Palette is ColorBrewer RdYlGn (5-class). Red-to-green carries the intended
+ * "poor match / good match" reading, and this particular ramp keeps a
+ * monotonic lightness run from dark red through pale yellow to mid green, so it
+ * stays readable under red-green colour blindness where a pure hue ramp would
+ * not.
+ */
+const COMPOSITE_STOPS: [number, string][] = [
+  [0, '#a50026'],   // worst match
+  [25, '#f46d43'],
+  [50, '#fee08b'],
+  [75, '#a6d96a'],
+  [100, '#1a9850'], // best match
+];
+
+/** Colour for a composite score, 0-100 with 100 = good. */
+export function compositeColor(score: number): string {
+  const v = Math.max(0, Math.min(100, score));
+
+  for (let i = 0; i < COMPOSITE_STOPS.length - 1; i++) {
+    const [lo, loColor] = COMPOSITE_STOPS[i];
+    const [hi, hiColor] = COMPOSITE_STOPS[i + 1];
+    if (v <= hi) {
+      const t = hi === lo ? 0 : (v - lo) / (hi - lo);
+      return interpolateTwoColors(loColor, hiColor, t);
+    }
+  }
+  return COMPOSITE_STOPS[COMPOSITE_STOPS.length - 1][1];
+}
+
+/** The composite ramp as MapLibre interpolate stops. */
+export function compositeColorStops(steps: number = 10): [number, string][] {
+  const stops: [number, string][] = [];
+  for (let i = 0; i <= steps; i++) {
+    const score = (i / steps) * 100;
+    stops.push([score, compositeColor(score)]);
+  }
+  return stops;
+}
+
+/** CSS gradient for the composite legend, matching the map exactly. */
+export function compositeGradientCss(): string {
+  return `linear-gradient(90deg, ${COMPOSITE_STOPS.map(([s, c]) => `${c} ${s}%`).join(', ')})`;
+}

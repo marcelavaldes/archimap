@@ -45,9 +45,17 @@ From `docs/product/user-stories.md`: Epic 4 (Consultant Features), preserved ver
 ### US-4.1: Create Client Profile
 > As an architect-consultant, I want to save each client's preferences to generate personalized recommendations.
 
+> **Note (2026-09-06):** the *weight sliders* below were built and shipped — see
+> [`docs/features/WEIGHTED_COMPOSITE.md`](../features/WEIGHTED_COMPOSITE.md). They were only ever
+> filed here because they happened to be one acceptance criterion of this consultant-CRM story.
+> The interaction — live weights driving a live map, for whoever is looking at it — is central to
+> the product and much smaller than the epic it was buried in; weights live in the URL rather than
+> in a saved profile. The rest of US-4.1 (named clients, email, budget, a workspace, a client list)
+> remains deferred.
+
 **Acceptance Criteria:**
 - [ ] Form: name, email, maximum budget
-- [ ] Sliders for each criterion weight (e.g., climate 30%, cost 40%...)
+- [x] ~~Sliders for each criterion weight (e.g., climate 30%, cost 40%...)~~ — built, unweighted from this story
 - [ ] Constraints: "near airport", "coast", etc.
 - [ ] Profile saved in my workspace
 - [ ] Client list in dashboard

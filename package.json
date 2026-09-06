@@ -11,7 +11,9 @@
     "typecheck": "tsc --noEmit",
     "test": "bun test",
     "test:auth": "bun tests/admin-session.test.ts && bun tests/admin-auth-flow.test.ts",
-    "ingest:geo": "bun run scripts/ingest/geo.ts"
+    "ingest:geo": "bun run scripts/ingest/geo.ts",
+    "fixture:build": "bun run scripts/fixture/build-fixture.ts",
+    "dev:shots": "node scripts/dev/screenshot-map.mjs"
   },
   "dependencies": {
     "@supabase/ssr": "^0.8.0",

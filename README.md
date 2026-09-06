@@ -26,6 +26,18 @@ cp .env.example .env.local
 # Configurer les variables Supabase dans .env.local
 ```
 
+### Sans identifiants Supabase
+
+La carte est utilisable sans aucun identifiant, sur des données de test :
+
+```bash
+bun run fixture:build              # une fois — géométries réelles des communes
+echo "ARCHIMAP_FIXTURE=1" > .env.local
+bun run dev                        # puis /map
+```
+
+Voir [`docs/development/RUNNING_WITHOUT_CREDENTIALS.md`](docs/development/RUNNING_WITHOUT_CREDENTIALS.md).
+
 ## Développement
 
 ```bash
