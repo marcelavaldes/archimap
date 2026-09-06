@@ -36,18 +36,33 @@ export function DetailPanel({ feature, onClose, criterionId, criteria }: DetailP
 
   // Fetch full commune data when a commune is selected
   useEffect(() => {
-    if (feature?.level === 'commune' && feature.code) {
-      const code = feature.code;
-      fetch(`/api/commune/${code}`)
-        .then(res => res.json())
-        .then(data => {
-          if (!data.error) {
-            setCommuneData(data);
-          }
-        })
-        .catch(console.error)
-        .finally(() => setLoadedCode(code));
-    }
+    if (feature?.level !== 'commune' || !feature.code) return;
+
+    const code = feature.code;
+    // Responses can settle out of order. Without this guard, selecting A then B
+    // and having A land last overwrites loadedCode with A while B is selected,
+    // so `loading` stays true forever and nothing refetches B. Only the request
+    // for the currently selected commune is allowed to commit state.
+    let cancelled = false;
+
+    fetch(`/api/commune/${code}`)
+      .then(res => res.json())
+      .then(data => {
+        if (cancelled) return;
+        if (!data.error) {
+          setCommuneData(data);
+        }
+      })
+      .catch(error => {
+        if (!cancelled) console.error(error);
+      })
+      .finally(() => {
+        if (!cancelled) setLoadedCode(code);
+      });
+
+    return () => {
+      cancelled = true;
+    };
   }, [feature?.code, feature?.level]);
 
   const loading = feature?.level === 'commune' && !!feature.code && loadedCode !== feature.code;
