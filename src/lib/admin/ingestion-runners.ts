@@ -73,14 +73,22 @@ async function fetchWithRetry(url: string, maxRetries = 3): Promise<Response> {
 
 async function getCommuneCodes(): Promise<Set<string>> {
   const supabase = createAdminClient();
+  // .order('code') is load-bearing, not cosmetic: offset pagination over an
+  // unordered query has no stable row order, so a row can be returned on two
+  // pages and another skipped entirely. Ordering by the primary key gives the
+  // 35 .range() calls one consistent sequence to walk.
   const rows = await fetchAllRows<{ code: string }>((from, to) =>
-    supabase.from('communes').select('code').range(from, to)
+    supabase.from('communes').select('code').order('code').range(from, to)
   );
 
-  assertSufficientCommuneCount(rows.length);
-
+  // Count distinct codes, not rows returned. A duplicate row would otherwise
+  // pad the total and let a reference set that is missing communes slip past
+  // the guard below.
   const codes = new Set<string>();
   rows.forEach((row) => codes.add(row.code));
+
+  assertSufficientCommuneCount(codes.size);
+
   return codes;
 }
 

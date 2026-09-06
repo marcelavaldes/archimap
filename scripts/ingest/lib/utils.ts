@@ -156,19 +156,27 @@ export async function upsertCriterionValues(
  * Get all commune codes from database
  */
 export async function getCommuneCodes(): Promise<Set<string>> {
+  // .order('code') is load-bearing, not cosmetic: offset pagination over an
+  // unordered query has no stable row order, so a row can be returned on two
+  // pages and another skipped entirely. Ordering by the primary key gives the
+  // 35 .range() calls one consistent sequence to walk.
   const rows = await fetchAllRows<{ code: string }>((from, to) =>
-    supabase.from('communes').select('code').range(from, to)
+    supabase.from('communes').select('code').order('code').range(from, to)
   );
 
-  if (rows.length < EXPECTED_MIN_COMMUNES) {
+  // Count distinct codes, not rows returned. A duplicate row would otherwise
+  // pad the total and let a reference set that is missing communes slip past
+  // the guard below.
+  const codes = new Set<string>();
+  rows.forEach((row) => codes.add(row.code));
+
+  if (codes.size < EXPECTED_MIN_COMMUNES) {
     throw new Error(
-      `Commune count too low: fetched ${rows.length}, expected at least ${EXPECTED_MIN_COMMUNES}. ` +
+      `Commune count too low: fetched ${codes.size} distinct codes, expected at least ${EXPECTED_MIN_COMMUNES}. ` +
         `Refusing to ingest against a truncated reference population — check pagination and the communes table.`
     );
   }
 
-  const codes = new Set<string>();
-  rows.forEach((row) => codes.add(row.code));
   return codes;
 }
 
