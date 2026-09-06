@@ -97,163 +97,77 @@ CREATE INDEX idx_criterion_values_criterion ON criterion_values(criterion_id);
 CREATE INDEX idx_criterion_values_score ON criterion_values(criterion_id, score);
 ```
 
-### User & Organization Data (Consultant Features)
-
-#### `organizations`
-Multi-tenant support for consultants.
+#### `criteria`
+Criterion definitions (name, category, unit, color scale, ingestion config). Replaces what was
+originally a hardcoded constant.
 
 ```sql
-CREATE TABLE organizations (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-  clerk_org_id VARCHAR(100) UNIQUE NOT NULL,
+CREATE TABLE criteria (
+  id VARCHAR(50) PRIMARY KEY,
   name VARCHAR(200) NOT NULL,
-  plan VARCHAR(50) DEFAULT 'free', -- free, pro, enterprise
-  created_at TIMESTAMPTZ DEFAULT NOW(),
-  updated_at TIMESTAMPTZ DEFAULT NOW()
-);
-```
-
-#### `users`
-User profiles linked to Clerk.
-
-```sql
-CREATE TABLE users (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-  clerk_user_id VARCHAR(100) UNIQUE NOT NULL,
-  organization_id UUID REFERENCES organizations(id),
-  email VARCHAR(255) NOT NULL,
-  name VARCHAR(200),
-  role VARCHAR(50) DEFAULT 'viewer', -- admin, editor, viewer
-  created_at TIMESTAMPTZ DEFAULT NOW(),
-  updated_at TIMESTAMPTZ DEFAULT NOW()
-);
-
-CREATE INDEX idx_users_org ON users(organization_id);
-CREATE INDEX idx_users_clerk ON users(clerk_user_id);
-```
-
-#### `client_profiles`
-Consultant clients with their preferences.
-
-```sql
-CREATE TABLE client_profiles (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-  organization_id UUID NOT NULL REFERENCES organizations(id),
-  created_by UUID NOT NULL REFERENCES users(id),
-  name VARCHAR(200) NOT NULL,
-  email VARCHAR(255),
-  budget_max INTEGER,
-  preferences JSONB DEFAULT '{}',
-  -- preferences structure:
-  -- {
-  --   "weights": { "climate": 30, "cost": 40, ... },
-  --   "constraints": ["near_airport", "coast", ...]
-  -- }
-  notes TEXT,
+  name_en VARCHAR(200) NOT NULL,
+  category VARCHAR(50) NOT NULL CHECK (category IN ('climate','cost','services','quality','employment')),
+  description TEXT NOT NULL,
+  unit VARCHAR(50) NOT NULL,
+  source VARCHAR(200) NOT NULL,
+  last_updated DATE,
+  higher_is_better BOOLEAN NOT NULL DEFAULT true,
+  color_scale_low VARCHAR(7) NOT NULL,
+  color_scale_mid VARCHAR(7) NOT NULL,
+  color_scale_high VARCHAR(7) NOT NULL,
+  enabled BOOLEAN NOT NULL DEFAULT true,
+  display_order INTEGER NOT NULL DEFAULT 0,
+  ingestion_type VARCHAR(20) NOT NULL DEFAULT 'manual' CHECK (ingestion_type IN ('manual','api','csv')),
+  api_config JSONB,
   created_at TIMESTAMPTZ DEFAULT NOW(),
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
-CREATE INDEX idx_client_profiles_org ON client_profiles(organization_id);
+CREATE INDEX idx_criteria_category ON criteria(category);
+CREATE INDEX idx_criteria_enabled ON criteria(enabled);
 ```
 
-#### `saved_comparisons`
-Saved commune comparisons for clients.
+A `criterion_coverage` view over `criteria` and `criterion_values` reports how many communes have
+data per criterion — see `supabase/migrations/20260226000000_create_criteria_table.sql`.
 
-```sql
-CREATE TABLE saved_comparisons (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-  client_profile_id UUID NOT NULL REFERENCES client_profiles(id),
-  commune_codes VARCHAR(5)[] NOT NULL,
-  notes TEXT,
-  created_at TIMESTAMPTZ DEFAULT NOW()
-);
-
-CREATE INDEX idx_saved_comparisons_client ON saved_comparisons(client_profile_id);
-```
-
-#### `reports`
-Generated PDF reports.
-
-```sql
-CREATE TABLE reports (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-  client_profile_id UUID NOT NULL REFERENCES client_profiles(id),
-  comparison_id UUID REFERENCES saved_comparisons(id),
-  storage_path VARCHAR(500) NOT NULL, -- Supabase Storage path
-  generated_at TIMESTAMPTZ DEFAULT NOW()
-);
-
-CREATE INDEX idx_reports_client ON reports(client_profile_id);
-```
-
-#### `custom_criteria`
-Organization-specific criteria.
-
-```sql
-CREATE TABLE custom_criteria (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-  organization_id UUID NOT NULL REFERENCES organizations(id),
-  criterion_id VARCHAR(50) NOT NULL,
-  name VARCHAR(100) NOT NULL,
-  description TEXT,
-  unit VARCHAR(50),
-  higher_is_better BOOLEAN DEFAULT true,
-  color_scale JSONB DEFAULT '{"low": "#ef4444", "mid": "#fbbf24", "high": "#22c55e"}',
-  created_at TIMESTAMPTZ DEFAULT NOW(),
-  UNIQUE(organization_id, criterion_id)
-);
-
-CREATE INDEX idx_custom_criteria_org ON custom_criteria(organization_id);
-```
-
-#### `custom_criterion_values`
-Values for custom criteria.
-
-```sql
-CREATE TABLE custom_criterion_values (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-  custom_criterion_id UUID NOT NULL REFERENCES custom_criteria(id),
-  commune_code VARCHAR(5) NOT NULL REFERENCES communes(code),
-  value DECIMAL(12,4) NOT NULL,
-  score INTEGER NOT NULL CHECK (score >= 0 AND score <= 100),
-  created_at TIMESTAMPTZ DEFAULT NOW(),
-  UNIQUE(custom_criterion_id, commune_code)
-);
-
-CREATE INDEX idx_custom_values_criterion ON custom_criterion_values(custom_criterion_id);
-```
+> A consultant SaaS tier (`organizations`, `users`, `client_profiles`, `saved_comparisons`,
+> `reports`, `custom_criteria`, `custom_criterion_values`) was documented here in an earlier draft.
+> None of those tables were ever created — cut on 2026-08-26, see
+> [`docs/product/DEFERRED.md`](../product/DEFERRED.md).
 
 ## Row Level Security Policies
 
+Every table above is public reference data: anyone may `SELECT`, nobody may write through
+PostgREST. Writes happen only through the service-role key (which carries `BYPASSRLS`) from
+authenticated admin routes — there is deliberately no `INSERT`/`UPDATE`/`DELETE` policy, and with
+RLS enabled and no permissive policy for a command, that command is denied.
+
 ```sql
--- Enable RLS on all tables
-ALTER TABLE organizations ENABLE ROW LEVEL SECURITY;
-ALTER TABLE users ENABLE ROW LEVEL SECURITY;
-ALTER TABLE client_profiles ENABLE ROW LEVEL SECURITY;
-ALTER TABLE saved_comparisons ENABLE ROW LEVEL SECURITY;
-ALTER TABLE reports ENABLE ROW LEVEL SECURITY;
-ALTER TABLE custom_criteria ENABLE ROW LEVEL SECURITY;
-ALTER TABLE custom_criterion_values ENABLE ROW LEVEL SECURITY;
+ALTER TABLE regions ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "regions_public_read" ON regions
+  FOR SELECT TO anon, authenticated USING (true);
 
--- Public tables (no RLS needed for read)
--- regions, departements, communes, criterion_values
+ALTER TABLE departements ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "departements_public_read" ON departements
+  FOR SELECT TO anon, authenticated USING (true);
 
--- Example policy for client_profiles
-CREATE POLICY "Users can view their org's client profiles"
-  ON client_profiles FOR SELECT
-  USING (organization_id IN (
-    SELECT organization_id FROM users WHERE clerk_user_id = auth.jwt() ->> 'sub'
-  ));
+ALTER TABLE communes ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "communes_public_read" ON communes
+  FOR SELECT TO anon, authenticated USING (true);
 
-CREATE POLICY "Editors can insert client profiles"
-  ON client_profiles FOR INSERT
-  WITH CHECK (organization_id IN (
-    SELECT organization_id FROM users
-    WHERE clerk_user_id = auth.jwt() ->> 'sub'
-    AND role IN ('admin', 'editor')
-  ));
+ALTER TABLE criteria ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "criteria_public_read" ON criteria
+  FOR SELECT TO anon, authenticated USING (true);
+
+ALTER TABLE criterion_values ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "criterion_values_public_read" ON criterion_values
+  FOR SELECT TO anon, authenticated USING (true);
 ```
+
+The `criterion_coverage` view is declared `security_invoker = on` so it runs as the caller and
+stays subject to the same policies, rather than bypassing them under its owner's privileges.
+
+Full policy set, with rationale: `supabase/migrations/20260826120000_enable_rls.sql`.
 
 ## Functions
 

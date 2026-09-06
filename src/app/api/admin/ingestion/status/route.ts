@@ -8,7 +8,7 @@ export const runtime = 'nodejs';
  * GET /api/admin/ingestion/status — Status of API-type criteria
  */
 export async function GET(request: NextRequest) {
-  const authError = verifyAdmin(request);
+  const authError = await verifyAdmin(request);
   if (authError) return authError;
 
   try {

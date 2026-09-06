@@ -13,14 +13,18 @@ export default function MapPage() {
   const mapContainer = useRef<HTMLDivElement>(null);
   const map = useRef<maplibregl.Map | null>(null);
   const [isMapReady, setIsMapReady] = useState(false);
-  const [status, setStatus] = useState('Initialisation...');
+  // Starts already reflecting what the init effect below is about to do, so
+  // that effect doesn't need an unconditional setState at its own top level.
+  const [status, setStatus] = useState('Création de la carte...');
   const { log, updateDataQuality } = useDebug();
 
   // Stable refs so callbacks/effects always see latest without re-creating
   const logRef = useRef(log);
-  logRef.current = log;
   const updateDQRef = useRef(updateDataQuality);
-  updateDQRef.current = updateDataQuality;
+  useEffect(() => {
+    logRef.current = log;
+    updateDQRef.current = updateDataQuality;
+  }, [log, updateDataQuality]);
 
   // Get criterion and criteria from context
   const { selectedCriterion, setMap, criteria } = useMapContext();
@@ -87,7 +91,7 @@ export default function MapPage() {
       });
 
       // Load communes from multiple départements for demo
-      const allFeatures: unknown[] = [];
+      const allFeatures: GeoJSON.Feature[] = [];
       let deptsSucceeded = 0;
       let deptsFailed = 0;
 
@@ -135,8 +139,8 @@ export default function MapPage() {
       }
 
       // Data quality analysis
-      const withScore = allFeatures.filter((f: any) => f.properties?.criterionScore != null).length;
-      const withValue = allFeatures.filter((f: any) => f.properties?.criterionValue != null).length;
+      const withScore = allFeatures.filter((f) => f.properties?.criterionScore != null).length;
+      const withValue = allFeatures.filter((f) => f.properties?.criterionValue != null).length;
       const loadDuration = performance.now() - loadStart;
 
       logRef.current('DATA', withScore > 0 ? 'success' : 'warn',
@@ -150,7 +154,7 @@ export default function MapPage() {
 
       // Log sample feature for debugging field naming issues
       if (allFeatures.length > 0) {
-        const sample = allFeatures[0] as any;
+        const sample = allFeatures[0];
         logRef.current('DATA', 'info', `Sample feature properties (first commune)`, {
           featureId: sample.id,
           properties: sample.properties,
@@ -282,7 +286,6 @@ export default function MapPage() {
   useEffect(() => {
     if (!mapContainer.current || map.current) return;
 
-    setStatus('Création de la carte...');
     logRef.current('MAP', 'info', 'Creating MapLibre instance');
 
     const mapInstance = new maplibregl.Map({
@@ -325,7 +328,10 @@ export default function MapPage() {
   useEffect(() => {
     if (!isMapReady || !criteria) return;
     logRef.current('STATE', 'info', `Criterion changed: ${selectedCriterion ?? '(none)'}`);
-    loadLayer(selectedCriterion);
+    // loadLayer sets status text as it progresses; deferring the call to a
+    // microtask keeps this effect's own body free of a direct, synchronous
+    // setState call while still running before the next paint.
+    queueMicrotask(() => loadLayer(selectedCriterion));
   }, [isMapReady, selectedCriterion, loadLayer, criteria]);
 
   const buildTime = process.env.NEXT_PUBLIC_BUILD_TIME

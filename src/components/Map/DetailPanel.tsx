@@ -30,25 +30,47 @@ interface DetailPanelProps {
 
 export function DetailPanel({ feature, onClose, criterionId, criteria }: DetailPanelProps) {
   const [communeData, setCommuneData] = useState<CommuneData | null>(null);
-  const [loading, setLoading] = useState(false);
+  // Tracks which commune code the last fetch settled for, so "loading" can be
+  // derived instead of set synchronously at the top of the effect below.
+  const [loadedCode, setLoadedCode] = useState<string | null>(null);
 
   // Fetch full commune data when a commune is selected
   useEffect(() => {
-    if (feature?.level === 'commune' && feature.code) {
-      setLoading(true);
-      fetch(`/api/commune/${feature.code}`)
-        .then(res => res.json())
-        .then(data => {
-          if (!data.error) {
-            setCommuneData(data);
-          }
-        })
-        .catch(console.error)
-        .finally(() => setLoading(false));
-    } else {
-      setCommuneData(null);
-    }
+    if (feature?.level !== 'commune' || !feature.code) return;
+
+    const code = feature.code;
+    // Responses can settle out of order. Without this guard, selecting A then B
+    // and having A land last overwrites loadedCode with A while B is selected,
+    // so `loading` stays true forever and nothing refetches B. Only the request
+    // for the currently selected commune is allowed to commit state.
+    let cancelled = false;
+
+    fetch(`/api/commune/${code}`)
+      .then(res => res.json())
+      .then(data => {
+        if (cancelled) return;
+        if (!data.error) {
+          setCommuneData(data);
+        }
+      })
+      .catch(error => {
+        if (!cancelled) console.error(error);
+      })
+      .finally(() => {
+        if (!cancelled) setLoadedCode(code);
+      });
+
+    return () => {
+      cancelled = true;
+    };
   }, [feature?.code, feature?.level]);
+
+  const loading = feature?.level === 'commune' && !!feature.code && loadedCode !== feature.code;
+  // Only trust communeData when it actually matches the currently selected
+  // commune — stale data from a previous selection is discarded here instead
+  // of via a synchronous setState(null) in the effect above.
+  const activeCommuneData =
+    feature?.level === 'commune' && communeData?.code === feature.code ? communeData : null;
 
   // Close on Escape key
   useEffect(() => {
@@ -76,7 +98,7 @@ export function DetailPanel({ feature, onClose, criterionId, criteria }: DetailP
   };
 
   // Build radar scores from fetched data
-  const radarScores = communeData ? buildRadarScores(communeData.criteria, criteria ?? undefined) : [];
+  const radarScores = activeCommuneData ? buildRadarScores(activeCommuneData.criteria, criteria ?? undefined) : [];
 
   return (
     <>
@@ -99,8 +121,8 @@ export function DetailPanel({ feature, onClose, criterionId, criteria }: DetailP
             <h2 className="text-xl font-semibold truncate">{feature.nom}</h2>
             <p className="text-sm text-muted-foreground mt-1">
               {levelLabels[feature.level] || feature.level}
-              {communeData?.departement && ` • ${communeData.departement.nom}`}
-              {communeData?.region && ` • ${communeData.region.nom}`}
+              {activeCommuneData?.departement && ` • ${activeCommuneData.departement.nom}`}
+              {activeCommuneData?.region && ` • ${activeCommuneData.region.nom}`}
             </p>
           </div>
           <button
@@ -122,11 +144,11 @@ export function DetailPanel({ feature, onClose, criterionId, criteria }: DetailP
             <div className="space-y-2">
               <DetailRow label="Code INSEE" value={feature.code} mono />
               <DetailRow label="Niveau" value={levelLabels[feature.level] || feature.level} />
-              {(communeData?.population ?? feature.population) !== undefined && (
+              {(activeCommuneData?.population ?? feature.population) !== undefined && (
                 <DetailRow
                   label="Population"
                   value={new Intl.NumberFormat('fr-FR').format(
-                    Number(communeData?.population ?? feature.population ?? 0)
+                    Number(activeCommuneData?.population ?? feature.population ?? 0)
                   )}
                 />
               )}
@@ -137,7 +159,7 @@ export function DetailPanel({ feature, onClose, criterionId, criteria }: DetailP
           {feature.level === 'commune' && (
             <section>
               <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-3">
-                Vue d'ensemble des critères
+                Vue d&apos;ensemble des critères
               </h3>
               {loading ? (
                 <div className="flex items-center justify-center h-64">
@@ -161,21 +183,21 @@ export function DetailPanel({ feature, onClose, criterionId, criteria }: DetailP
               </h3>
               <CriterionDisplay
                 criterion={criteria[criterionId]}
-                value={communeData?.criteria[criterionId]?.value ?? feature.criterionValue as number | undefined}
-                score={communeData?.criteria[criterionId]?.score ?? feature.criterionScore as number | undefined}
-                rank={communeData?.criteria[criterionId]?.rankNational ?? feature.criterionRank as number | undefined}
+                value={activeCommuneData?.criteria[criterionId]?.value ?? feature.criterionValue as number | undefined}
+                score={activeCommuneData?.criteria[criterionId]?.score ?? feature.criterionScore as number | undefined}
+                rank={activeCommuneData?.criteria[criterionId]?.rankNational ?? feature.criterionRank as number | undefined}
               />
             </section>
           )}
 
           {/* All Criteria List */}
-          {communeData && Object.keys(communeData.criteria).length > 0 && (
+          {activeCommuneData && Object.keys(activeCommuneData.criteria).length > 0 && (
             <section>
               <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-3">
                 Détail des critères
               </h3>
               <div className="space-y-4">
-                {Object.entries(communeData.criteria).map(([critId, data]) => {
+                {Object.entries(activeCommuneData.criteria).map(([critId, data]) => {
                   const criterion = criteria?.[critId];
                   if (!criterion) return null;
 

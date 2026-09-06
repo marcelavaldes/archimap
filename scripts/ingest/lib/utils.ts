@@ -17,6 +17,32 @@ if (!SUPABASE_SERVICE_KEY) {
 export const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
 
 /**
+ * Metropolitan France + DOM has ~34,900 communes as of 2026; INSEE mergers
+ * shift that by a few dozen every January, so this is a floor, not an exact
+ * figure. PostgREST caps an unbounded select at 1,000 rows by default — if
+ * pagination ever regresses, the fetched count will fall far short of this
+ * floor and ingestion must abort rather than silently score against a
+ * fraction of the country.
+ */
+export const EXPECTED_MIN_COMMUNES = 30000;
+
+/** Read every row of a paginated PostgREST query by following .range() pages until exhausted. */
+async function fetchAllRows<T>(
+  query: (from: number, to: number) => PromiseLike<{ data: T[] | null; error: { message: string } | null }>
+): Promise<T[]> {
+  const PAGE = 1000;
+  const out: T[] = [];
+  for (let from = 0; ; from += PAGE) {
+    const { data, error } = await query(from, from + PAGE - 1);
+    if (error) throw new Error(error.message);
+    if (!data?.length) break;
+    out.push(...data);
+    if (data.length < PAGE) break;
+  }
+  return out;
+}
+
+/**
  * Normalize values to scores using percentile-clipped min-max (2nd-98th percentile)
  * This handles outliers by clipping extreme values
  */
@@ -44,7 +70,11 @@ export function normalizeToScore(
 }
 
 /**
- * Calculate national ranks for values
+ * Calculate national ranks for values.
+ *
+ * Uses competition ranking (1, 2, 2, 4): communes tied on the raw value
+ * share the same rank, and the next distinct value skips ahead accordingly.
+ * Kept in sync with src/lib/admin/scoring.ts's calculateRanks().
  */
 export function calculateRanks(
   values: Map<string, number>,
@@ -58,8 +88,13 @@ export function calculateRanks(
   });
 
   const ranks = new Map<string, number>();
-  entries.forEach(([code], index) => {
-    ranks.set(code, index + 1);
+  let previousValue: number | null = null;
+  let previousRank = 0;
+  entries.forEach(([code, value], index) => {
+    const rank = value === previousValue ? previousRank : index + 1;
+    ranks.set(code, rank);
+    previousValue = value;
+    previousRank = rank;
   });
 
   return ranks;
@@ -121,18 +156,27 @@ export async function upsertCriterionValues(
  * Get all commune codes from database
  */
 export async function getCommuneCodes(): Promise<Set<string>> {
+  // .order('code') is load-bearing, not cosmetic: offset pagination over an
+  // unordered query has no stable row order, so a row can be returned on two
+  // pages and another skipped entirely. Ordering by the primary key gives the
+  // 35 .range() calls one consistent sequence to walk.
+  const rows = await fetchAllRows<{ code: string }>((from, to) =>
+    supabase.from('communes').select('code').order('code').range(from, to)
+  );
+
+  // Count distinct codes, not rows returned. A duplicate row would otherwise
+  // pad the total and let a reference set that is missing communes slip past
+  // the guard below.
   const codes = new Set<string>();
+  rows.forEach((row) => codes.add(row.code));
 
-  const { data, error } = await supabase
-    .from('communes')
-    .select('code');
-
-  if (error) {
-    console.error('Error fetching commune codes:', error.message);
-    return codes;
+  if (codes.size < EXPECTED_MIN_COMMUNES) {
+    throw new Error(
+      `Commune count too low: fetched ${codes.size} distinct codes, expected at least ${EXPECTED_MIN_COMMUNES}. ` +
+        `Refusing to ingest against a truncated reference population — check pagination and the communes table.`
+    );
   }
 
-  data?.forEach((row) => codes.add(row.code));
   return codes;
 }
 

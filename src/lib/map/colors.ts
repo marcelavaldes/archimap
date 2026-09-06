@@ -2,6 +2,23 @@ import { Criterion } from '@/types/criteria';
 
 /**
  * Interpolate between colors based on a normalized value (0-100)
+ *
+ * Colour direction is encoded in three places that must agree, and they
+ * currently do:
+ *  1. Ingest time (normalizeToScore in src/lib/admin/scoring.ts): the stored
+ *     `score` is already flipped by `higherIsBetter` so that 100 always means
+ *     "good" and 0 always means "bad", regardless of the criterion's raw
+ *     direction.
+ *  2. `colorScale.{low,mid,high}` on each Criterion is authored in RAW-VALUE
+ *     order (low raw value -> mid -> high raw value), not good-to-bad order.
+ *  3. Here, `higherIsBetter` re-inverts the already-good/bad `score` to
+ *     recover the raw-value position needed to index into that raw-ordered
+ *     palette — cancelling the inversion from step 1.
+ *
+ * Do not "simplify" this by removing the inversion here or re-authoring the
+ * palettes in good/bad order: any one of the three changing alone silently
+ * flips the colour ramp for every lower-is-better criterion, with no error —
+ * the map keeps rendering, just backwards.
  */
 export function interpolateColor(value: number, criterion: Criterion): string {
   const { colorScale, higherIsBetter } = criterion;

@@ -10,6 +10,7 @@ import {
   normalizeToScore,
   calculateRanks,
   upsertCriterionValues,
+  assertSufficientCommuneCount,
   type CriterionRecord,
 } from './scoring';
 
@@ -27,6 +28,22 @@ export interface IngestionResult {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Read every row of a paginated PostgREST query by following .range() pages until exhausted. */
+async function fetchAllRows<T>(
+  query: (from: number, to: number) => PromiseLike<{ data: T[] | null; error: { message: string } | null }>
+): Promise<T[]> {
+  const PAGE = 1000;
+  const out: T[] = [];
+  for (let from = 0; ; from += PAGE) {
+    const { data, error } = await query(from, from + PAGE - 1);
+    if (error) throw new Error(error.message);
+    if (!data?.length) break;
+    out.push(...data);
+    if (data.length < PAGE) break;
+  }
+  return out;
 }
 
 async function fetchWithRetry(url: string, maxRetries = 3): Promise<Response> {
@@ -56,10 +73,22 @@ async function fetchWithRetry(url: string, maxRetries = 3): Promise<Response> {
 
 async function getCommuneCodes(): Promise<Set<string>> {
   const supabase = createAdminClient();
+  // .order('code') is load-bearing, not cosmetic: offset pagination over an
+  // unordered query has no stable row order, so a row can be returned on two
+  // pages and another skipped entirely. Ordering by the primary key gives the
+  // 35 .range() calls one consistent sequence to walk.
+  const rows = await fetchAllRows<{ code: string }>((from, to) =>
+    supabase.from('communes').select('code').order('code').range(from, to)
+  );
+
+  // Count distinct codes, not rows returned. A duplicate row would otherwise
+  // pad the total and let a reference set that is missing communes slip past
+  // the guard below.
   const codes = new Set<string>();
-  const { data, error } = await supabase.from('communes').select('code');
-  if (error) throw new Error(`Error fetching communes: ${error.message}`);
-  data?.forEach((row) => codes.add(row.code));
+  rows.forEach((row) => codes.add(row.code));
+
+  assertSufficientCommuneCount(codes.size);
+
   return codes;
 }
 
@@ -146,9 +175,11 @@ function buildRecords(
   values: Map<string, number>,
   criterionId: string,
   source: string,
-  higherIsBetter: boolean
+  higherIsBetter: boolean,
+  log?: LogFn
 ): CriterionRecord[] {
   const allValues = Array.from(values.values());
+  log?.(`  Scoring against a reference set of ${allValues.length} communes`);
   const ranks = calculateRanks(values, higherIsBetter);
   const sourceDate = new Date().toISOString().split('T')[0];
   const records: CriterionRecord[] = [];
@@ -274,7 +305,7 @@ async function ingestTemperature(log: LogFn): Promise<IngestionResult> {
   log(`  Mapped ${values.size} communes`);
 
   log('Step 4: Calculating scores and ranks...');
-  const records = buildRecords(values, CRITERION_ID, SOURCE, HIGHER_IS_BETTER);
+  const records = buildRecords(values, CRITERION_ID, SOURCE, HIGHER_IS_BETTER, log);
 
   log('Step 5: Upserting to database...');
   const result = await upsertCriterionValues(records);
@@ -321,7 +352,7 @@ async function ingestRainfall(log: LogFn): Promise<IngestionResult> {
   log(`  Mapped ${values.size} communes`);
 
   log('Step 4: Calculating scores and ranks...');
-  const records = buildRecords(values, CRITERION_ID, SOURCE, HIGHER_IS_BETTER);
+  const records = buildRecords(values, CRITERION_ID, SOURCE, HIGHER_IS_BETTER, log);
 
   log('Step 5: Upserting to database...');
   const result = await upsertCriterionValues(records);
@@ -419,7 +450,7 @@ async function ingestSunshine(log: LogFn): Promise<IngestionResult> {
   log(`  Mapped ${values.size} communes`);
 
   log('Step 4: Calculating scores and ranks...');
-  const records = buildRecords(values, CRITERION_ID, SOURCE, HIGHER_IS_BETTER);
+  const records = buildRecords(values, CRITERION_ID, SOURCE, HIGHER_IS_BETTER, log);
 
   log('Step 5: Upserting to database...');
   const result = await upsertCriterionValues(records);
@@ -517,7 +548,7 @@ async function ingestCrimeRate(log: LogFn): Promise<IngestionResult> {
   log(`  ${filtered.size} communes matched`);
 
   log('Step 4: Calculating scores and ranks...');
-  const records = buildRecords(filtered, CRITERION_ID, SOURCE, HIGHER_IS_BETTER);
+  const records = buildRecords(filtered, CRITERION_ID, SOURCE, HIGHER_IS_BETTER, log);
 
   log('Step 5: Upserting to database...');
   const result = await upsertCriterionValues(records);
@@ -591,7 +622,7 @@ async function ingestEmploymentRate(log: LogFn): Promise<IngestionResult> {
   log(`  ${filtered.size} communes matched`);
 
   log('Step 4: Calculating scores and ranks...');
-  const records = buildRecords(filtered, CRITERION_ID, SOURCE, HIGHER_IS_BETTER);
+  const records = buildRecords(filtered, CRITERION_ID, SOURCE, HIGHER_IS_BETTER, log);
 
   log('Step 5: Upserting to database...');
   const result = await upsertCriterionValues(records);
@@ -664,7 +695,7 @@ async function ingestMedianIncome(log: LogFn): Promise<IngestionResult> {
   log(`  ${filtered.size} communes matched`);
 
   log('Step 4: Calculating scores and ranks...');
-  const records = buildRecords(filtered, CRITERION_ID, SOURCE, HIGHER_IS_BETTER);
+  const records = buildRecords(filtered, CRITERION_ID, SOURCE, HIGHER_IS_BETTER, log);
 
   log('Step 5: Upserting to database...');
   const result = await upsertCriterionValues(records);
@@ -805,7 +836,7 @@ async function ingestHospitalAccess(log: LogFn): Promise<IngestionResult> {
   log(`  Calculated distances for ${distances.size} communes`);
 
   log('Step 4: Calculating scores and ranks...');
-  const records = buildRecords(distances, CRITERION_ID, SOURCE, HIGHER_IS_BETTER);
+  const records = buildRecords(distances, CRITERION_ID, SOURCE, HIGHER_IS_BETTER, log);
 
   log('Step 5: Upserting to database...');
   const result = await upsertCriterionValues(records);
@@ -871,7 +902,7 @@ async function ingestPublicTransport(log: LogFn): Promise<IngestionResult> {
   log(`  Mapped ${values.size} communes (${Array.from(values.values()).filter((v) => v > 0).length} with transport)`);
 
   log('Step 4: Calculating scores and ranks...');
-  const records = buildRecords(values, CRITERION_ID, SOURCE, HIGHER_IS_BETTER);
+  const records = buildRecords(values, CRITERION_ID, SOURCE, HIGHER_IS_BETTER, log);
 
   log('Step 5: Upserting to database...');
   const result = await upsertCriterionValues(records);
@@ -919,7 +950,7 @@ async function ingestCulturalVenues(log: LogFn): Promise<IngestionResult> {
   log(`  ${filtered.size} communes (${venueCounts.size} with venues)`);
 
   log('Step 4: Calculating scores and ranks...');
-  const records = buildRecords(filtered, CRITERION_ID, SOURCE, HIGHER_IS_BETTER);
+  const records = buildRecords(filtered, CRITERION_ID, SOURCE, HIGHER_IS_BETTER, log);
 
   log('Step 5: Upserting to database...');
   const result = await upsertCriterionValues(records);
@@ -973,7 +1004,7 @@ async function ingestLocalTax(log: LogFn): Promise<IngestionResult> {
   log(`  ${filtered.size} communes matched`);
 
   log('Step 5: Calculating scores and ranks...');
-  const records = buildRecords(filtered, CRITERION_ID, SOURCE, HIGHER_IS_BETTER);
+  const records = buildRecords(filtered, CRITERION_ID, SOURCE, HIGHER_IS_BETTER, log);
 
   log('Step 6: Upserting to database...');
   const result = await upsertCriterionValues(records);
@@ -1033,7 +1064,7 @@ async function ingestInternetSpeed(log: LogFn): Promise<IngestionResult> {
   log(`  ${filtered.size} communes matched`);
 
   log('Step 4: Calculating scores and ranks...');
-  const records = buildRecords(filtered, CRITERION_ID, SOURCE, HIGHER_IS_BETTER);
+  const records = buildRecords(filtered, CRITERION_ID, SOURCE, HIGHER_IS_BETTER, log);
 
   log('Step 5: Upserting to database...');
   const result = await upsertCriterionValues(records);
@@ -1051,10 +1082,7 @@ async function ingestPropertyPrice(log: LogFn): Promise<IngestionResult> {
   const BASE_URL = 'http://api.cquest.org/dvf';
 
   log('Step 1: Fetching commune codes...');
-  const supabase = createAdminClient();
-  const { data: communes, error } = await supabase.from('communes').select('code').order('code');
-  if (error) throw new Error(`Error fetching communes: ${error.message}`);
-  const communeCodes = communes?.map((r) => r.code) || [];
+  const communeCodes = Array.from(await getCommuneCodes()).sort();
   log(`  ${communeCodes.length} communes in database`);
 
   log('Step 2: Fetching property prices from DVF API...');
@@ -1113,7 +1141,7 @@ async function ingestPropertyPrice(log: LogFn): Promise<IngestionResult> {
   if (prices.size === 0) throw new Error('No price data found');
 
   log('Step 3: Calculating scores and ranks...');
-  const records = buildRecords(prices, CRITERION_ID, SOURCE, HIGHER_IS_BETTER);
+  const records = buildRecords(prices, CRITERION_ID, SOURCE, HIGHER_IS_BETTER, log);
 
   log('Step 4: Upserting to database...');
   const result = await upsertCriterionValues(records);

@@ -1,29 +1,36 @@
 import { NextRequest, NextResponse } from 'next/server';
-
-const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD;
+import {
+  ADMIN_COOKIE,
+  getSessionSecret,
+  readTokenFromHeader,
+  verifyToken,
+} from './session';
 
 /**
- * Verify admin authentication via Bearer token or cookie.
+ * Verify an admin session via Bearer token or cookie.
  * Returns null if authenticated, or a 401 NextResponse if not.
+ *
+ * This checks a signed session token — it never compares anything against
+ * ADMIN_PASSWORD. Minting that token is the login handler's job alone.
+ *
+ * `src/middleware.ts` already gates every /api/admin route; these per-route
+ * calls stay as defence in depth so a matcher change cannot silently expose a
+ * handler.
  */
-export function verifyAdmin(request: NextRequest): NextResponse | null {
-  if (!ADMIN_PASSWORD) {
+export async function verifyAdmin(request: NextRequest): Promise<NextResponse | null> {
+  const secret = getSessionSecret();
+  if (!secret) {
     return NextResponse.json(
-      { error: 'ADMIN_PASSWORD not configured' },
+      { error: 'ADMIN_SESSION_SECRET not configured' },
       { status: 500 }
     );
   }
 
-  // Check Authorization header
-  const authHeader = request.headers.get('Authorization');
-  if (authHeader) {
-    const token = authHeader.replace('Bearer ', '');
-    if (token === ADMIN_PASSWORD) return null;
-  }
+  const bearer = readTokenFromHeader(request.headers.get('Authorization'));
+  if (bearer && (await verifyToken(secret, bearer))) return null;
 
-  // Check cookie
-  const cookie = request.cookies.get('admin_token');
-  if (cookie?.value === ADMIN_PASSWORD) return null;
+  const cookie = request.cookies.get(ADMIN_COOKIE)?.value;
+  if (await verifyToken(secret, cookie)) return null;
 
   return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 }

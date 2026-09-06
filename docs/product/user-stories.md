@@ -106,49 +106,6 @@
 
 ---
 
-## Epic 4: Consultant Features
-
-### US-4.1: Create Client Profile
-> As an architect-consultant, I want to save each client's preferences to generate personalized recommendations.
-
-**Acceptance Criteria:**
-- [ ] Form: name, email, maximum budget
-- [ ] Sliders for each criterion weight (e.g., climate 30%, cost 40%...)
-- [ ] Constraints: "near airport", "coast", etc.
-- [ ] Profile saved in my workspace
-- [ ] Client list in dashboard
-
----
-
-### US-4.2: Generate PDF Report for Client
-> As a consultant, I want to generate a professional PDF report comparing selected communes to present to my client.
-
-**Acceptance Criteria:**
-- [ ] Select client + communes to compare
-- [ ] Field for personalized notes
-- [ ] "Generate PDF" button
-- [ ] PDF includes: branding, map, comparison table, recommendation
-- [ ] PDF downloadable and saved in history
-
----
-
-### US-4.3: Create Custom Criterion
-> As a consultant specialized in wineries, I want to add a "proximity to vineyards" criterion for my specific clients.
-
-**Acceptance Criteria:**
-- [ ] Can create new criterion with name
-- [ ] Define metrics that compose the criterion
-- [ ] Enter data manually per commune (or import CSV)
-- [ ] Criterion appears as additional option on map
-- [ ] Only visible to my organization
-
----
-
-### US-4.4: Manage My Organization
-> As lead consultant, I want to invite collaborators to my organization so they can view and edit client profiles.
-
-**Acceptance Criteria:**
-- [ ] Can invite users by email
-- [ ] Assign roles: admin, editor, viewer
-- [ ] Client data is shared within organization
-- [ ] Can remove users
+Epic 4 (Consultant Features: client profiles, PDF reports, custom criteria, organization
+management) was cut on 2026-08-26 for lack of validated demand — see
+[`DEFERRED.md`](./DEFERRED.md).

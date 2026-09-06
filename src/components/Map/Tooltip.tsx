@@ -1,8 +1,10 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useLayoutEffect, useRef } from 'react';
 import { GeoFeatureProperties } from '@/types/geo';
 import type { Criterion } from '@/types/criteria';
+
+const TOOLTIP_OFFSET = 15;
 
 interface TooltipProps {
   feature: GeoFeatureProperties | null;
@@ -14,41 +16,44 @@ interface TooltipProps {
 
 export function Tooltip({ feature, x, y, criterionId, criteria }: TooltipProps) {
   const tooltipRef = useRef<HTMLDivElement>(null);
-  const [position, setPosition] = useState({ x, y });
 
-  useEffect(() => {
-    if (!tooltipRef.current || !feature) return;
-
+  // Viewport-clamped position depends on the tooltip's own rendered size, which
+  // is only known after paint. Writing it straight to the DOM node (an external
+  // system) instead of React state avoids a synchronous setState + extra render
+  // pass just to reposition an element that renders identically either way.
+  useLayoutEffect(() => {
     const tooltip = tooltipRef.current;
+    if (!tooltip || !feature) return;
+
     const rect = tooltip.getBoundingClientRect();
     const viewportWidth = window.innerWidth;
     const viewportHeight = window.innerHeight;
 
-    const offset = 15;
-    let adjustedX = x + offset;
-    let adjustedY = y + offset;
+    let adjustedX = x + TOOLTIP_OFFSET;
+    let adjustedY = y + TOOLTIP_OFFSET;
 
     // Prevent tooltip from going off-screen right
     if (adjustedX + rect.width > viewportWidth) {
-      adjustedX = x - rect.width - offset;
+      adjustedX = x - rect.width - TOOLTIP_OFFSET;
     }
 
     // Prevent tooltip from going off-screen bottom
     if (adjustedY + rect.height > viewportHeight) {
-      adjustedY = y - rect.height - offset;
+      adjustedY = y - rect.height - TOOLTIP_OFFSET;
     }
 
     // Prevent tooltip from going off-screen left
     if (adjustedX < 0) {
-      adjustedX = offset;
+      adjustedX = TOOLTIP_OFFSET;
     }
 
     // Prevent tooltip from going off-screen top
     if (adjustedY < 0) {
-      adjustedY = offset;
+      adjustedY = TOOLTIP_OFFSET;
     }
 
-    setPosition({ x: adjustedX, y: adjustedY });
+    tooltip.style.left = `${adjustedX}px`;
+    tooltip.style.top = `${adjustedY}px`;
   }, [x, y, feature]);
 
   if (!feature) return null;
@@ -75,8 +80,8 @@ export function Tooltip({ feature, x, y, criterionId, criteria }: TooltipProps) 
       ref={tooltipRef}
       className="pointer-events-none fixed z-50 rounded-lg border border-border bg-background px-3 py-2 shadow-lg"
       style={{
-        left: `${position.x}px`,
-        top: `${position.y}px`,
+        left: `${x + TOOLTIP_OFFSET}px`,
+        top: `${y + TOOLTIP_OFFSET}px`,
       }}
     >
       <div className="space-y-1">

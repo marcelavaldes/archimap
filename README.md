@@ -102,10 +102,9 @@ src/
 - [ ] Navigation hiérarchique
 - [ ] Panel de détails avec radar chart
 
-### Phase 4: Fonctionnalités Consultant
-- [ ] Authentification multi-tenant (Clerk)
-- [ ] Profils de clients
-- [ ] Génération de rapports PDF
+Une Phase 4 (fonctionnalités consultant multi-tenant : Clerk, profils clients, rapports PDF) avait
+été prévue ici et a été abandonnée le 2026-08-26, faute de demande validée — voir
+[`docs/product/DEFERRED.md`](docs/product/DEFERRED.md).
 
 ## License
 
