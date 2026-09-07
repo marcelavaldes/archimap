@@ -19,8 +19,12 @@
 
 export const FIXTURE_MODE = process.env.ARCHIMAP_FIXTURE === '1';
 
-/** Departements the fixture covers; mirrors DEMO_DEPARTEMENTS on the map page. */
-export const FIXTURE_DEPARTEMENTS = ['34', '30', '11', '66', '09', '31', '81', '12', '48', '07'];
+/**
+ * Départements the fixture covers. Re-exported from the map's region config so
+ * there is exactly one list; a mismatch here would serve empty
+ * FeatureCollections and render a blank map with no error.
+ */
+export { DEMO_REGION } from '@/lib/map/region';
 
 export class FixtureMissingError extends Error {
   constructor(path: string) {

@@ -5,3 +5,4 @@ export { DetailPanel } from './DetailPanel';
 export { Breadcrumb } from './Breadcrumb';
 export { Legend } from './Legend';
 export type { BreadcrumbItem } from './Breadcrumb';
+export { DemoBanner } from './DemoBanner';

@@ -7,7 +7,8 @@ import { gunzipSync } from 'zlib';
 import JSZip from 'jszip';
 import { createAdminClient } from './supabase';
 import {
-  normalizeToScore,
+  percentileBounds,
+  scoreFromBounds,
   calculateRanks,
   upsertCriterionValues,
   assertSufficientCommuneCount,
@@ -180,6 +181,12 @@ function buildRecords(
 ): CriterionRecord[] {
   const allValues = Array.from(values.values());
   log?.(`  Scoring against a reference set of ${allValues.length} communes`);
+  // Hoisted out of the loop: the percentile clip is a property of the whole
+  // population, not of the value being scored. Calling normalizeToScore per
+  // commune re-sorted all ~35,000 values 35,000 times — O(N^2 log N), roughly
+  // eight minutes of pure CPU, which is why a full national ingest never
+  // finished. One sort now.
+  const bounds = percentileBounds(allValues);
   const ranks = calculateRanks(values, higherIsBetter);
   const sourceDate = new Date().toISOString().split('T')[0];
   const records: CriterionRecord[] = [];
@@ -189,7 +196,7 @@ function buildRecords(
       commune_code: code,
       criterion_id: criterionId,
       value,
-      score: normalizeToScore(value, allValues, higherIsBetter),
+      score: scoreFromBounds(value, bounds, higherIsBetter),
       rank_national: ranks.get(code) || 0,
       source,
       source_date: sourceDate,

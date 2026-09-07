@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { normalizeToScore, calculateRanks, assertSufficientCommuneCount, EXPECTED_MIN_COMMUNES } from './scoring';
+import { normalizeToScore, calculateRanks, assertSufficientCommuneCount, EXPECTED_MIN_COMMUNES, percentileBounds, scoreFromBounds } from './scoring';
 
 describe('normalizeToScore', () => {
   // 100 values, 0..99, so p2Index = floor(100*0.02) = 2 -> p2 = 2,
@@ -106,5 +106,64 @@ describe('assertSufficientCommuneCount (pagination guard)', () => {
   test('does not throw when the commune count meets the floor', () => {
     expect(() => assertSufficientCommuneCount(EXPECTED_MIN_COMMUNES)).not.toThrow();
     expect(() => assertSufficientCommuneCount(35000)).not.toThrow();
+  });
+});
+
+
+describe('batch scoring (percentileBounds + scoreFromBounds)', () => {
+  // normalizeToScore sorts the whole reference population on every call, so
+  // scoring N rows against an N-row population is O(N^2 log N) — about eight
+  // minutes at the ~35,000 communes of a national ingest, which is why a full
+  // ingest never completed. The batch path hoists the sort out of the loop.
+  // These tests exist to stop the two paths drifting apart: normalizeToScore is
+  // now a thin wrapper over the same two functions, and must stay that way.
+  const reference = Array.from({ length: 1000 }, (_, i) => i * 3.7);
+
+  test('batch path agrees with normalizeToScore for every sampled value, higher-is-better', () => {
+    const bounds = percentileBounds(reference);
+    for (const value of reference.filter((_, i) => i % 37 === 0)) {
+      expect(scoreFromBounds(value, bounds, true)).toBe(normalizeToScore(value, reference, true));
+    }
+  });
+
+  test('batch path agrees with normalizeToScore for every sampled value, lower-is-better', () => {
+    const bounds = percentileBounds(reference);
+    for (const value of reference.filter((_, i) => i % 37 === 0)) {
+      expect(scoreFromBounds(value, bounds, false)).toBe(normalizeToScore(value, reference, false));
+    }
+  });
+
+  test('percentileBounds returns null for an empty population, and scoreFromBounds falls back to 50', () => {
+    expect(percentileBounds([])).toBeNull();
+    expect(scoreFromBounds(42, null, true)).toBe(50);
+  });
+
+  test('a degenerate population (p2 === p98) scores 50 rather than dividing by zero', () => {
+    const flat = Array.from({ length: 100 }, () => 7);
+    expect(scoreFromBounds(7, percentileBounds(flat), true)).toBe(50);
+  });
+
+  test('direction invariant survives the batch path: 100 still means good', () => {
+    const bounds = percentileBounds(reference);
+    const best = reference[reference.length - 1];
+    const worst = reference[0];
+    // higher-is-better: the largest raw value is the good one
+    expect(scoreFromBounds(best, bounds, true)).toBe(100);
+    expect(scoreFromBounds(worst, bounds, true)).toBe(0);
+    // lower-is-better: the smallest raw value is the good one, and the stored
+    // score is flipped so 100 still means good
+    expect(scoreFromBounds(worst, bounds, false)).toBe(100);
+    expect(scoreFromBounds(best, bounds, false)).toBe(0);
+  });
+
+  test('scoring a full population is not quadratic: 20k rows complete well under a second', () => {
+    const population = Array.from({ length: 20000 }, (_, i) => Math.sin(i) * 1000 + i);
+    const started = performance.now();
+    const bounds = percentileBounds(population);
+    for (const value of population) scoreFromBounds(value, bounds, true);
+    const elapsed = performance.now() - started;
+    // The per-call path would re-sort 20,000 elements 20,000 times here and
+    // take minutes. A generous ceiling still catches a regression to that.
+    expect(elapsed).toBeLessThan(2000);
   });
 });

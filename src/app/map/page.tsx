@@ -5,10 +5,14 @@ import maplibregl from 'maplibre-gl';
 import { useMapContext } from './layout';
 import { generateColorStops, compositeColorStops, compositeGradientCss } from '@/lib/map/colors';
 import { compositeScore } from '@/lib/map/composite';
+import { DEMO_REGION } from '@/lib/map/region';
 import { useDebug } from '@/lib/debug/DebugContext';
+import { DemoBanner } from '@/components/Map/DemoBanner';
 
-// Départements with criterion data (Hérault area for demo)
-const DEMO_DEPARTEMENTS = ['34', '30', '11', '66', '09', '31', '81', '12', '48', '07'];
+// The demo's scope. Single source of truth in src/lib/map/region.ts — the
+// fixture builder and the fixture server read the same list, so the map can
+// never ask for a département the fixture did not build.
+const DEMO_DEPARTEMENTS = DEMO_REGION.departements;
 
 /** Sources this page owns; cleared before either mode draws. */
 const MANAGED_SOURCES = ['communes', 'regions', 'composite'];
@@ -243,10 +247,9 @@ export default function MapPage() {
         },
       });
 
-      // Zoom to Occitanie region
       mapInstance.flyTo({
-        center: [2.5, 43.5],
-        zoom: 7,
+        center: DEMO_REGION.center,
+        zoom: DEMO_REGION.zoom,
         duration: 1000,
       });
 
@@ -492,7 +495,7 @@ export default function MapPage() {
       paint: { 'line-color': '#000', 'line-width': 0.5, 'line-opacity': 0.25 },
     });
 
-    mapInstance.flyTo({ center: [2.5, 43.5], zoom: 7, duration: 1000 });
+    mapInstance.flyTo({ center: DEMO_REGION.center, zoom: DEMO_REGION.zoom, duration: 1000 });
 
     applyWeights();
   }, [criteria, removeManagedLayers, applyWeights]);
@@ -576,6 +579,8 @@ export default function MapPage() {
   return (
     <div className="absolute inset-0">
       <div ref={mapContainer} className="w-full h-full" />
+
+      <DemoBanner />
 
       {/* Status indicator */}
       <div className="absolute bottom-4 right-4 bg-white/90 backdrop-blur-sm border border-gray-200 rounded-lg px-3 py-2 text-xs text-gray-600 z-30 shadow-sm">

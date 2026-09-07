@@ -49,3 +49,6 @@ scripts/ingest/sql/
 
 # screenshots from scripts/dev/screenshot-map.mjs
 /.screenshots/
+
+# raw real-data capture (scripts/fixture/capture-real.ts)
+/fixtures-raw/
