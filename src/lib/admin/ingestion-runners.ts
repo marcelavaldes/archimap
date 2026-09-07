@@ -857,92 +857,148 @@ async function ingestSunshine(log: LogFn): Promise<IngestionResult> {
 
 // --- Crime Rate ---
 
+/**
+ * SSMSI "bases statistiques communales de la délinquance enregistrée".
+ *
+ * PROVENANCE — verified 2026-09-07
+ *   data.gouv.fr dataset  621df2954fa5a3b5a023e23c
+ *     slug: bases-statistiques-communale-departementale-et-regionale-de-la-
+ *           delinquance-enregistree-par-la-police-et-la-gendarmerie-nationales
+ *   resource picked       donnee-data.gouv-2025-geographie2026-produit-le2026-06-25.csv.gz
+ *   contents              2016-2025, 34,920 communes x 15 indicators x 10 years
+ *   geography             commune codes as of 1 January 2026
+ *   cadence               republished twice a year (January and July editions)
+ *
+ * WHY THE OLD MATCHER FOUND NOTHING ("Crime dataset CSV not found"): it required
+ * `format === 'csv'`, and the communal file is published as `csv.gz`. The only
+ * plain-csv resources in the dataset are the DEP and REG aggregates, whose
+ * titles do not contain "donnee-data.gouv", so no resource matched at all. The
+ * discriminator that actually holds is the file name — the communal file is
+ * `donnee-data.gouv-…`, the others are `donnee-dep-data.gouv-…`,
+ * `donnee-reg-data.gouv-…` and `donnee-comm-data.gouv-parquet-…`.
+ *
+ * TWO FORMAT TRAPS, both of which produce plausible-looking garbage rather than
+ * an error:
+ *   1. Decimal comma. taux_pour_mille is written "15,2654561"; parseFloat()
+ *      stops at the comma and returns 15. Every rate truncated to its integer
+ *      part. Parsed with frenchDecimal() now.
+ *   2. The geography column is CODGEO_2026, not CODGEO — the suffix tracks the
+ *      geography vintage and moves every year, so match on the prefix.
+ *
+ * THE SUPPRESSION PROBLEM, AND WHAT THIS DOES ABOUT IT. SSMSI withholds a
+ * commune-level count whenever it is small enough to identify someone
+ * (est_diffuse = "ndiff", with nombre and taux_pour_mille both "NA"). For 2025
+ * that is 251,145 of 523,800 commune-indicator cells — 48% of the file. Summing
+ * only the published rates leaves 25,301 of 34,920 communes on exactly 0.0‰,
+ * i.e. presented as the safest places in France, when in fact their numbers
+ * were withheld. So for a withheld cell we substitute complement_info_taux,
+ * which SSMSI publishes for exactly this purpose: the rate over the pooled
+ * non-diffused communes of the same département for that indicator.
+ *
+ * That substitution is an imputation, not a measurement — every suppressed
+ * commune in a département shares the same substituted component — and it is
+ * the honest trade here: it moves the national distribution from "median 0.0‰"
+ * to median 24.7‰, p5 8.3‰, p95 52.3‰, which is the right order of magnitude
+ * for recorded delinquency, and it stops rural France from being painted as
+ * crime-free by a confidentiality rule.
+ *
+ * KNOWN GAPS, both inherent to the source:
+ *   - The value is the sum of 15 indicator rates whose denominators are not
+ *     identical — "Cambriolages de logement" is per 1,000 dwellings, the other
+ *     fourteen per 1,000 inhabitants. That is how SSMSI publishes them and how
+ *     its own departmental atlases add them up, but it makes the total an index
+ *     rather than a strict per-1,000-inhabitant rate.
+ *   - The three "stupéfiants" indicators count mis en cause where the offence
+ *     was recorded, not where the offender lives, so a small commune on a
+ *     motorway can spike on one gendarmerie operation. Trelins (42313, 682
+ *     inhabitants) records 226 drug offences in 2025 and comes out at 365.5‰,
+ *     the worst in the Loire. That is the source telling the truth about
+ *     recorded offences, not a parse error — the 2nd/98th percentile clip in
+ *     scoring.ts keeps it from dragging the whole scale.
+ */
 async function ingestCrimeRate(log: LogFn): Promise<IngestionResult> {
   const CRITERION_ID = 'crimeRate';
   const SOURCE = 'SSMSI - Ministère de l\'Intérieur';
   const HIGHER_IS_BETTER = false;
+  const DATASET_ID = '621df2954fa5a3b5a023e23c';
 
   log('Step 1: Fetching commune codes...');
   const validCodes = await getCommuneCodes();
   log(`  ${validCodes.size} communes in database`);
 
-  log('Step 2: Finding latest crime dataset URL...');
-  // Use data.gouv.fr API to get latest resource
-  const datasetRes = await fetchWithRetry(
-    'https://www.data.gouv.fr/api/1/datasets/bases-statistiques-communale-departementale-et-regionale-de-la-delinquance-enregistree-par-la-police-et-la-gendarmerie-nationales/'
+  log('Step 2: Finding the commune-level crime file on data.gouv.fr...');
+  const resource = await findDataGouvResource(
+    DATASET_ID,
+    (fileName) => fileName.startsWith('donnee-data.gouv-') && fileName.endsWith('.csv.gz')
   );
-  const dataset = await datasetRes.json();
+  log(`  Found: ${resource.fileName} (${resource.format})`);
 
-  // Find the commune-level CSV (gzipped)
-  const csvResource = dataset.resources?.find(
-    (r: { title: string; format: string }) =>
-      r.title?.toLowerCase().includes('donnee-data.gouv') &&
-      r.format?.toLowerCase() === 'csv'
-  );
+  log('Step 3: Streaming the gzipped CSV (~40 MB, 5.2M rows)...');
+  // year -> commune -> summed rate over the 15 indicators.
+  const byYear = new Map<string, Map<string, number>>();
+  let header: string[] | null = null;
+  let codeIdx = -1;
+  let yearIdx = -1;
+  let rateIdx = -1;
+  let diffIdx = -1;
+  let complementIdx = -1;
+  let dataRows = 0;
+  let imputedCells = 0;
 
-  if (!csvResource?.url) {
-    throw new Error('Crime dataset CSV not found on data.gouv.fr');
-  }
-
-  log(`  Found: ${csvResource.title}`);
-  log('  Downloading gzipped CSV (this may take a moment)...');
-
-  const text = await downloadGzipped(csvResource.url);
-  log(`  Downloaded ${(text.length / 1024 / 1024).toFixed(1)} MB`);
-
-  log('  Parsing crime data...');
-  const lines = text.split('\n');
-  const headers = lines[0].split(';').map((h: string) => h.replace(/"/g, ''));
-
-  const codeIdx = headers.findIndex((h: string) => h.includes('CODGEO'));
-  const yearIdx = headers.indexOf('annee');
-  const rateIdx = headers.findIndex((h: string) => h.includes('taux_pour_mille'));
-  const diffIdx = headers.findIndex((h: string) => h.includes('est_diffuse'));
-
-  if (codeIdx === -1 || rateIdx === -1) {
-    throw new Error(`Required columns not found. Headers: ${headers.slice(0, 8).join(', ')}`);
-  }
-
-  // Find the latest year in data
-  const years = new Set<string>();
-  for (let i = 1; i < Math.min(1000, lines.length); i++) {
-    const cols = lines[i].split(';').map((c: string) => c.replace(/"/g, ''));
-    if (yearIdx >= 0 && cols[yearIdx]) years.add(cols[yearIdx]);
-  }
-  const latestYear = Array.from(years).sort().pop() || '';
-  log(`  Using year: ${latestYear}`);
-
-  // Aggregate total crime rate per commune (sum of all categories)
-  const crimeRates = new Map<string, number>();
-
-  for (let i = 1; i < lines.length; i++) {
-    if (!lines[i].trim()) continue;
-    const cols = lines[i].split(';').map((c: string) => c.replace(/"/g, ''));
-
-    const code = cols[codeIdx];
-    const year = yearIdx >= 0 ? cols[yearIdx] : latestYear;
-    const rate = parseFloat(cols[rateIdx]);
-    const isDiffused = diffIdx >= 0 ? cols[diffIdx] === 'diff' : true;
-
-    if (code && year === latestYear && !isNaN(rate) && isDiffused) {
-      crimeRates.set(code, (crimeRates.get(code) || 0) + rate);
+  await streamGzippedRows(resource.url, ';', (cells) => {
+    if (header === null) {
+      header = cells;
+      codeIdx = header.findIndex((h) => h.startsWith('CODGEO'));
+      yearIdx = header.indexOf('annee');
+      rateIdx = header.indexOf('taux_pour_mille');
+      diffIdx = header.indexOf('est_diffuse');
+      complementIdx = header.indexOf('complement_info_taux');
+      if (codeIdx === -1 || yearIdx === -1 || rateIdx === -1) {
+        throw new Error(`Required columns not found. Headers: ${header.join(', ')}`);
+      }
+      return;
     }
-  }
-  log(`  Parsed crime data for ${crimeRates.size} communes`);
 
-  log('Step 3: Filtering to valid communes...');
+    const code = cells[codeIdx];
+    const year = cells[yearIdx];
+    if (!code || !year) return;
+    dataRows++;
+
+    let bucket = byYear.get(year);
+    if (!bucket) {
+      bucket = new Map<string, number>();
+      byYear.set(year, bucket);
+    }
+
+    let rate = frenchDecimal(cells[rateIdx]);
+    if (rate === null && complementIdx >= 0 && (diffIdx === -1 || cells[diffIdx] === 'ndiff')) {
+      rate = frenchDecimal(cells[complementIdx]);
+      if (rate !== null) imputedCells++;
+    }
+
+    // A commune whose every cell is unusable still gets an entry at 0 rather
+    // than vanishing from the map — the .get() ?? 0 below keeps it present.
+    bucket.set(code, (bucket.get(code) ?? 0) + (rate ?? 0));
+  });
+
+  const years = Array.from(byYear.keys()).sort();
+  const latestYear = years[years.length - 1];
+  if (!latestYear) throw new Error('Crime file parsed but no rows were usable');
+  const totals = byYear.get(latestYear)!;
+  log(`  Parsed ${dataRows} rows, years ${years[0]}-${latestYear}`);
+  log(`  Using ${latestYear}: ${totals.size} communes, ${imputedCells} withheld cells imputed`);
+
+  log('Step 4: Filtering to valid communes...');
   const filtered = new Map<string, number>();
-  for (const [code, rate] of crimeRates) {
-    if (validCodes.has(code)) {
-      filtered.set(code, Math.round(rate * 10) / 10);
-    }
+  for (const [code, total] of totals) {
+    if (validCodes.has(code)) filtered.set(code, Math.round(total * 10) / 10);
   }
   log(`  ${filtered.size} communes matched`);
 
-  log('Step 4: Calculating scores and ranks...');
+  log('Step 5: Calculating scores and ranks...');
   const records = buildRecords(filtered, CRITERION_ID, SOURCE, HIGHER_IS_BETTER, log);
 
-  log('Step 5: Upserting to database...');
+  log('Step 6: Upserting to database...');
   const result = await upsertCriterionValues(records);
   log(`  Inserted: ${result.inserted}, Errors: ${result.errors}`);
 
@@ -1023,73 +1079,371 @@ async function ingestEmploymentRate(log: LogFn): Promise<IngestionResult> {
   return { inserted: result.inserted, errors: result.errors, communes: filtered.size };
 }
 
+// ───────────────────────────────────────────────────────────────
+//  OPEN-DATA HELPERS
+//  Shared by the four runners whose upstream sources moved or changed shape
+//  during 2026 — crimeRate, medianIncome, localTax, culturalVenues. They live
+//  here, next to their callers, rather than in SHARED UTILITIES above, because
+//  nothing else in this file needs them.
+// ───────────────────────────────────────────────────────────────
+
+/**
+ * Walk a delimited document row by row, honouring RFC-4180 double quotes
+ * (a quoted field may contain the separator, a newline, or a doubled `""`).
+ *
+ * The `line.split(sep)` the older runners use silently corrupts any file whose
+ * text fields can contain the separator. Measured on the Basilic cultural base
+ * (86,372 lines): 10,485 of them carry a `;` inside a quoted address or venue
+ * name, and naive splitting drops 137 venues outright while mis-columning
+ * thousands more. The INSEE Filosofi export quotes every single field.
+ *
+ * Callback-based on purpose. These files run to 57 MB and 1.1M rows and
+ * materialising them as an array of arrays costs more memory than the rest of
+ * the ingest put together.
+ *
+ * A leading UTF-8 BOM is stripped: the OpenDataSoft CSV export emits one, and
+ * it would otherwise glue itself to the first header name.
+ */
+function forEachDelimitedRow(
+  text: string,
+  sep: string,
+  onRow: (cells: string[]) => void
+): void {
+  if (text.charCodeAt(0) === 0xfeff) text = text.slice(1);
+
+  const len = text.length;
+  let pos = 0;
+  let cells: string[] = [];
+
+  const emit = () => {
+    // Skip the empty row a trailing newline produces, but keep a genuine
+    // all-empty row that had separators in it.
+    if (cells.length > 1 || cells[0] !== '') onRow(cells);
+    cells = [];
+  };
+
+  while (pos <= len) {
+    let value: string;
+
+    if (pos < len && text[pos] === '"') {
+      // Quoted: scan quote to quote with indexOf rather than character by
+      // character — char-wise concatenation over 57 MB is seconds of CPU.
+      let cursor = pos + 1;
+      let chunkStart = cursor;
+      let out = '';
+      for (;;) {
+        const quote = text.indexOf('"', cursor);
+        if (quote === -1) {
+          // Unterminated quote: take the remainder rather than losing the row.
+          out += text.slice(chunkStart);
+          cursor = len;
+          break;
+        }
+        if (text[quote + 1] === '"') {
+          out += text.slice(chunkStart, quote + 1);
+          cursor = quote + 2;
+          chunkStart = cursor;
+          continue;
+        }
+        out += text.slice(chunkStart, quote);
+        cursor = quote + 1;
+        break;
+      }
+      value = out;
+      pos = cursor;
+      // Anything between the closing quote and the next delimiter is padding.
+      while (pos < len && text[pos] !== sep && text[pos] !== '\n' && text[pos] !== '\r') pos++;
+    } else {
+      let end = pos;
+      while (end < len && text[end] !== sep && text[end] !== '\n' && text[end] !== '\r') end++;
+      value = text.slice(pos, end);
+      pos = end;
+    }
+
+    cells.push(value);
+
+    if (pos >= len) {
+      emit();
+      break;
+    }
+    if (text[pos] === sep) {
+      pos++;
+      continue;
+    }
+    pos += text[pos] === '\r' && text[pos + 1] === '\n' ? 2 : 1;
+    emit();
+  }
+}
+
+/**
+ * Stream a gzipped CSV row by row without ever holding the whole file.
+ *
+ * downloadGzipped() above returns the decompressed body as one string, which is
+ * fine for the tens-of-MB files it was written for. The SSMSI communal crime
+ * base is 40 MB gzipped and ~500 MB of text in 5,238,000 rows; turning that
+ * into a string and then .split('\n') needs several GB and dies. Streaming runs
+ * the same pass in about 25 s at ~250 MB RSS.
+ *
+ * Chunks are cut at the last newline before parsing, which is safe here because
+ * the SSMSI file has no newline inside a quoted field (row count matches line
+ * count exactly). A source that did would need the parser fed continuously.
+ */
+async function streamGzippedRows(
+  url: string,
+  sep: string,
+  onRow: (cells: string[]) => void
+): Promise<void> {
+  const res = await fetchWithRetry(url);
+  if (!res.body) throw new Error(`No response body for ${url}`);
+
+  const reader = res.body
+    .pipeThrough(new DecompressionStream('gzip'))
+    .pipeThrough(new TextDecoderStream('utf-8'))
+    .getReader();
+
+  let buffer = '';
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += value;
+    const lastBreak = buffer.lastIndexOf('\n');
+    if (lastBreak === -1) continue;
+    forEachDelimitedRow(buffer.slice(0, lastBreak + 1), sep, onRow);
+    buffer = buffer.slice(lastBreak + 1);
+  }
+  if (buffer.trim()) forEachDelimitedRow(buffer, sep, onRow);
+}
+
+interface DataGouvResource {
+  title: string;
+  format: string;
+  url: string;
+  fileName: string;
+}
+
+/**
+ * Resolve one resource of a data.gouv.fr dataset by looking at its file name.
+ *
+ * Two reasons this is a lookup and not a pinned URL. data.gouv.fr mints a fresh
+ * static.data.gouv.fr path on every republication (SSMSI republishes twice a
+ * year), so a pinned URL rots within months. And the `format` field is
+ * publisher-declared and unreliable — matching on it is what made the crime
+ * runner find nothing — whereas the file name is stable and descriptive.
+ *
+ * The error message lists what the dataset actually holds, so the next person
+ * to hit a rename can see the new name without opening a browser.
+ */
+async function findDataGouvResource(
+  datasetId: string,
+  matches: (fileName: string, resource: { title?: string; format?: string }) => boolean
+): Promise<DataGouvResource> {
+  const res = await fetchWithRetry(`https://www.data.gouv.fr/api/1/datasets/${datasetId}/`);
+  const dataset = await res.json();
+  const resources: { title?: string; format?: string; url?: string }[] = dataset.resources ?? [];
+
+  for (const resource of resources) {
+    if (!resource.url) continue;
+    const fileName = decodeURIComponent(resource.url.split('?')[0].split('/').pop() || '');
+    if (matches(fileName, resource)) {
+      return {
+        title: resource.title ?? fileName,
+        format: resource.format ?? '',
+        url: resource.url,
+        fileName,
+      };
+    }
+  }
+
+  const inventory = resources
+    .map((r) => `${r.format ?? '?'}:${(r.url ?? '').split('/').pop()}`)
+    .join(', ');
+  throw new Error(
+    `No matching resource in data.gouv.fr dataset ${datasetId}. Available: ${inventory.slice(0, 600)}`
+  );
+}
+
+/**
+ * Legal populations per commune from geo.api.gouv.fr — the denominator for any
+ * "per N inhabitants" criterion.
+ *
+ * Twelve communes have a legal population of zero (the villages français
+ * détruits of the Verdun battlefield, kept as communes with no inhabitants).
+ * They are dropped here rather than dividing by zero downstream.
+ */
+async function getCommunePopulations(log: LogFn): Promise<Map<string, number>> {
+  log('  Fetching commune populations from geo.api.gouv.fr...');
+  const res = await fetchWithRetry(
+    'https://geo.api.gouv.fr/communes?fields=code,population&format=json'
+  );
+  const rows: { code?: string; population?: number }[] = await res.json();
+
+  const populations = new Map<string, number>();
+  for (const row of rows) {
+    if (row.code && typeof row.population === 'number' && row.population > 0) {
+      populations.set(row.code, row.population);
+    }
+  }
+  log(`  Got populations for ${populations.size} communes`);
+  return populations;
+}
+
+/**
+ * Parse a French-formatted decimal. Returns null for the "NA" that INSEE and
+ * SSMSI use for a withheld or absent value.
+ *
+ * This is not pedantry: SSMSI writes taux_pour_mille as "15,2654561", and
+ * parseFloat() stops at the comma and returns 15. Every rate in the crime
+ * ingest was being truncated to its integer part.
+ */
+function frenchDecimal(raw: string | undefined): number | null {
+  if (raw == null) return null;
+  const trimmed = raw.trim();
+  if (!trimmed || trimmed === 'NA' || trimmed === 'N/A') return null;
+  const parsed = Number(trimmed.replace(',', '.'));
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
 // --- Median Income ---
 
+/**
+ * INSEE Filosofi — médiane du niveau de vie, i.e. revenu disponible par unité
+ * de consommation, per commune.
+ *
+ * PROVENANCE — verified 2026-09-07
+ *   INSEE Melodi dataset  DS_FILOSOFI_CC
+ *   catalogue entry       https://api.insee.fr/melodi/catalog/DS_FILOSOFI_CC
+ *   file, 2023 millésime  https://api.insee.fr/melodi/file/DS_FILOSOFI_CC/DS_FILOSOFI_CC_2023_CSV_FR
+ *                         (zip, 5.3 MB -> DS_FILOSOFI_CC_2023_data.csv, 57 MB)
+ *   selection             GEO_OBJECT = COM, FILOSOFI_MEASURE = MED_SL
+ *   geography             commune codes as of 1 January 2026
+ *   published             2026-05, corrected 2026-08-06
+ *
+ * WHAT WAS ACTUALLY BROKEN — the reported error was "Required columns not
+ * found. Headers: COD_VAR, LIB_VAR, COD_MOD, LIB_MOD", and the cause is a
+ * one-character regex hole: the runner asked downloadZipCSV for /data\.csv$/,
+ * and "DS_FILOSOFI_CC_metadata.csv" *ends with* "data.csv". JSZip handed back
+ * the variable dictionary instead of the observations. The pattern is anchored
+ * on the underscore now — /_data\.csv$/ — which "metadata.csv" cannot match.
+ *
+ * It was also pinned to base-cc-filosofi-2021, two millésimes stale, on a
+ * www.insee.fr/fr/statistiques/fichier/ path that INSEE does not keep stable.
+ * The file URL now comes from the Melodi catalogue so a new millésime is picked
+ * up on its own; PINNED_FILE below is the fallback if the catalogue moves.
+ *
+ * KNOWN GAPS, all upstream and all real:
+ *   - Filosofi covers metropolitan France and La Réunion only. Guadeloupe,
+ *     Martinique, Guyane, Mayotte and the COM have no median income at all —
+ *     that is roughly 200 communes with no value, by design.
+ *   - 3,960 communes carry CONF_STATUS = 'C' (secret statistique: too few tax
+ *     households to publish) and are skipped. 30,794 communes get a value.
+ *   - Nine communes are folded into a neighbour by INSEE and have no row of
+ *     their own: 15031/15035/15047/15171 into 15141, 85165/85212 into 85084,
+ *     09304 into 09042.
+ *   - Millésime 2023 is Filosofi 2, a methodology change. Its values are NOT
+ *     comparable with millésimes 2012-2021, so never mix them in one ingest.
+ */
 async function ingestMedianIncome(log: LogFn): Promise<IngestionResult> {
   const CRITERION_ID = 'medianIncome';
   const SOURCE = 'INSEE - Filosofi';
   const HIGHER_IS_BETTER = true;
+  const MELODI_CATALOG = 'https://api.insee.fr/melodi/catalog/DS_FILOSOFI_CC';
+  const PINNED_FILE = 'https://api.insee.fr/melodi/file/DS_FILOSOFI_CC/DS_FILOSOFI_CC_2023_CSV_FR';
 
   log('Step 1: Fetching commune codes...');
   const validCodes = await getCommuneCodes();
   log(`  ${validCodes.size} communes in database`);
 
-  log('Step 2: Downloading Filosofi data from INSEE...');
-  const url = 'https://www.insee.fr/fr/statistiques/fichier/7756729/base-cc-filosofi-2021-geo2025_csv.zip';
+  log('Step 2: Resolving the latest Filosofi millésime from INSEE Melodi...');
+  let fileUrl = PINNED_FILE;
+  let millesime = '2023';
+  try {
+    const catalogRes = await fetchWithRetry(MELODI_CATALOG);
+    const catalog = await catalogRes.json();
+    const products: { id?: string; format?: string; accessURL?: string }[] = catalog.product ?? [];
+    // The dataset ships both a CSV zip and an XLSX; only the CSV is machine-readable.
+    const csv = products.find((p) => p.format === 'CSV' && typeof p.accessURL === 'string');
+    if (csv?.accessURL) {
+      fileUrl = csv.accessURL;
+      millesime = /_(\d{4})_CSV/.exec(csv.id ?? '')?.[1] ?? millesime;
+    }
+  } catch (error) {
+    log(
+      `  Melodi catalogue unavailable (${error instanceof Error ? error.message : String(error)});` +
+        ` falling back to the pinned ${millesime} file`
+    );
+  }
+  log(`  Millésime ${millesime}: ${fileUrl}`);
 
-  const csvText = await downloadZipCSV(url, /data\.csv$/i);
+  log('Step 3: Downloading and unzipping the Filosofi export...');
+  // /_data\.csv$/ and not /data\.csv$/ — see the header comment; the loose
+  // pattern matched DS_FILOSOFI_CC_<year>_metadata.csv, the variable dictionary.
+  const csvText = await downloadZipCSV(fileUrl, /_data\.csv$/i);
   log(`  Downloaded ${(csvText.length / 1024 / 1024).toFixed(1)} MB CSV`);
 
-  log('  Parsing median income data...');
-  const lines = csvText.split('\n');
-  const sep = lines[0].includes(';') ? ';' : ',';
-  const headers = lines[0].split(sep).map((h) => h.replace(/"/g, '').trim());
-
-  const geoIdx = headers.indexOf('GEO');
-  const geoObjIdx = headers.indexOf('GEO_OBJECT');
-  const measureIdx = headers.indexOf('FILOSOFI_MEASURE');
-  const valueIdx = headers.indexOf('OBS_VALUE');
-  const confIdx = headers.indexOf('CONF_STATUS');
-
-  if (geoIdx === -1 || valueIdx === -1) {
-    throw new Error(`Required columns not found. Headers: ${headers.slice(0, 10).join(', ')}`);
-  }
-
+  log('  Parsing median income (GEO_OBJECT=COM, FILOSOFI_MEASURE=MED_SL)...');
   const incomes = new Map<string, number>();
+  let header: string[] | null = null;
+  let geoIdx = -1;
+  let geoObjIdx = -1;
+  let measureIdx = -1;
+  let valueIdx = -1;
+  let confIdx = -1;
+  let periodIdx = -1;
+  let suppressed = 0;
+  const periods = new Set<string>();
 
-  for (let i = 1; i < lines.length; i++) {
-    if (!lines[i].trim()) continue;
-    const cols = lines[i].split(sep).map((c) => c.replace(/"/g, '').trim());
-
-    const geo = cols[geoIdx];
-    const geoObj = geoObjIdx >= 0 ? cols[geoObjIdx] : 'COM';
-    const measure = measureIdx >= 0 ? cols[measureIdx] : 'MED_SL';
-    const value = parseFloat(cols[valueIdx]);
-    const conf = confIdx >= 0 ? cols[confIdx] : 'F';
-
-    if (
-      geo &&
-      geoObj === 'COM' &&
-      measure === 'MED_SL' &&
-      conf !== 'C' &&
-      !isNaN(value)
-    ) {
-      incomes.set(geo, Math.round(value));
+  // Every field in the 2023 export is double-quoted, so this cannot be split
+  // on ';' the way the 2021 file was.
+  forEachDelimitedRow(csvText, ';', (cells) => {
+    if (header === null) {
+      header = cells;
+      geoIdx = header.indexOf('GEO');
+      geoObjIdx = header.indexOf('GEO_OBJECT');
+      measureIdx = header.indexOf('FILOSOFI_MEASURE');
+      valueIdx = header.indexOf('OBS_VALUE');
+      confIdx = header.indexOf('CONF_STATUS');
+      periodIdx = header.indexOf('TIME_PERIOD');
+      if (geoIdx === -1 || valueIdx === -1 || measureIdx === -1 || geoObjIdx === -1) {
+        throw new Error(`Required columns not found. Headers: ${header.slice(0, 10).join(', ')}`);
+      }
+      return;
     }
-  }
-  log(`  Parsed income data for ${incomes.size} communes`);
 
-  log('Step 3: Filtering to valid communes...');
+    if (cells[geoObjIdx] !== 'COM' || cells[measureIdx] !== 'MED_SL') return;
+
+    const geo = cells[geoIdx];
+    if (!geo) return;
+    if (periodIdx >= 0 && cells[periodIdx]) periods.add(cells[periodIdx]);
+
+    // CONF_STATUS 'C' is secret statistique: the row exists but OBS_VALUE is
+    // deliberately empty. Counting these separately keeps the coverage gap
+    // visible in the log instead of hiding inside "communes matched".
+    if (confIdx >= 0 && cells[confIdx] === 'C') {
+      suppressed++;
+      return;
+    }
+
+    const value = Number(cells[valueIdx]);
+    if (!Number.isFinite(value) || value <= 0) return;
+    incomes.set(geo, Math.round(value));
+  });
+
+  log(
+    `  Parsed ${incomes.size} communes (${suppressed} withheld as secret statistique)` +
+      `, TIME_PERIOD ${Array.from(periods).sort().join('/')}`
+  );
+
+  log('Step 4: Filtering to valid communes...');
   const filtered = new Map<string, number>();
   for (const [code, income] of incomes) {
     if (validCodes.has(code)) filtered.set(code, income);
   }
   log(`  ${filtered.size} communes matched`);
 
-  log('Step 4: Calculating scores and ranks...');
+  log('Step 5: Calculating scores and ranks...');
   const records = buildRecords(filtered, CRITERION_ID, SOURCE, HIGHER_IS_BETTER, log);
 
-  log('Step 5: Upserting to database...');
+  log('Step 6: Upserting to database...');
   const result = await upsertCriterionValues(records);
   log(`  Inserted: ${result.inserted}, Errors: ${result.errors}`);
 
@@ -1309,84 +1663,222 @@ async function ingestPublicTransport(log: LogFn): Promise<IngestionResult> {
 
 // --- Cultural Venues ---
 
+/**
+ * Basilic — base des lieux et équipements culturels (DEPS, ministère de la
+ * Culture) — counted per 10,000 inhabitants.
+ *
+ * PROVENANCE — verified 2026-09-07
+ *   data.gouv.fr dataset  61777ddaa9101d073e5506cd
+ *     slug: base-des-lieux-et-equipements-culturels-basilic
+ *   resource picked       base-des-lieux-et-des-equipements-culturels.csv
+ *                         (49 MB, 86,366 venues, 22,084 communes, published 2026-02-18)
+ *   denominator           geo.api.gouv.fr populations légales
+ *
+ * WHY THE OLD CALL RETURNED "Failed to parse JSON": data.culture.gouv.fr has
+ * been retired. Every path on that host — /api/explore/v2.1/... included — now
+ * answers 301 to culture.data.gouv.fr, which is a JavaScript front-end onto
+ * data.gouv.fr with no OpenDataSoft API behind it (neither /api/explore nor
+ * /api/1 exists there; both return the SPA shell). paginateODS() was handed a
+ * "Moved Permanently" HTML body and died on JSON.parse. There is no ODS
+ * endpoint to migrate to — the base is distributed as a flat CSV on
+ * data.gouv.fr now, so we download and count it ourselves.
+ *
+ * WHY A QUOTE-AWARE PARSER: 10,485 of the 86,372 lines carry a `;` inside a
+ * quoted address or venue name. Splitting on `;` loses 137 venues outright and
+ * mis-columns thousands more.
+ *
+ * KNOWN SKEW — read this before trusting the map colour. 62% of Basilic is the
+ * "Patrimoine" domain (protected monuments), which is how a commune of 23
+ * inhabitants ends up with 64 entries: Le Mont-Saint-Michel (50353) lands at
+ * 27,826 venues per 10,000 inhabitants against a national median of 9.6. The
+ * 2nd/98th percentile clip in scoring.ts absorbs the tail, but the distribution
+ * stays strongly right-skewed and the median commune scores around 7/100.
+ * Dropping domains to flatten it would change what the criterion means — its
+ * seeded description is "nombre d'équipements culturels pour 10000 habitants",
+ * and Basilic is the official inventory — so the full base is kept and the
+ * skew documented rather than quietly engineered away.
+ *
+ * A commune with no venue is recorded as 0, not as missing: "no cultural
+ * facility" is a fact about the commune, not a hole in the data.
+ */
+
+/**
+ * Fold a Paris/Lyon/Marseille arrondissement municipal onto its parent commune.
+ *
+ * Basilic codes venues in the three PLM cities by arrondissement — 75101-75120,
+ * 69381-69389, 13201-13216 — while geo.api.gouv.fr and the communes table use
+ * the whole-commune codes 75056, 69123 and 13055. Without this fold France's
+ * three largest cities come out of the ingest with *zero* cultural venues:
+ * Paris' 3,767 entries all sit on codes that no commune row matches. Measured
+ * after folding: Paris 17.91, Lyon 10.59, Marseille 4.73 venues per 10,000.
+ *
+ * The three ranges are fixed INSEE conventions, not data we can look up here —
+ * geo.api.gouv.fr's /communes collection does not carry arrondissements.
+ */
+function foldArrondissementToCommune(code: string): string {
+  const n = Number(code);
+  if (!Number.isInteger(n)) return code;
+  if (n >= 75101 && n <= 75120) return '75056';
+  if (n >= 69381 && n <= 69389) return '69123';
+  if (n >= 13201 && n <= 13216) return '13055';
+  return code;
+}
 async function ingestCulturalVenues(log: LogFn): Promise<IngestionResult> {
   const CRITERION_ID = 'culturalVenues';
   const SOURCE = 'Ministère de la Culture - Basilic';
   const HIGHER_IS_BETTER = true;
-  const BASE_URL = 'https://data.culture.gouv.fr/api/explore/v2.1/catalog/datasets/base-des-lieux-et-des-equipements-culturels/records';
+  const DATASET_ID = '61777ddaa9101d073e5506cd';
 
   log('Step 1: Fetching commune codes...');
   const validCodes = await getCommuneCodes();
   log(`  ${validCodes.size} communes in database`);
 
-  log('Step 2: Fetching cultural venues from API...');
-  const { results } = await paginateODS(
-    BASE_URL,
-    { select: 'code_insee,nom,type_equipement_ou_lieu' },
-    log
+  log('Step 2: Finding the Basilic CSV on data.gouv.fr...');
+  const resource = await findDataGouvResource(
+    DATASET_ID,
+    (fileName) => fileName.endsWith('.csv') && fileName.includes('equipements-culturels')
   );
+  log(`  Found: ${resource.fileName}`);
+
+  log('Step 3: Downloading the venue list (~49 MB)...');
+  const res = await fetchWithRetry(resource.url);
+  const csvText = await res.text();
+  log(`  Downloaded ${(csvText.length / 1024 / 1024).toFixed(1)} MB CSV`);
 
   const venueCounts = new Map<string, number>();
-  for (const record of results) {
-    const code = record.code_insee as string;
-    if (code) {
-      venueCounts.set(code, (venueCounts.get(code) || 0) + 1);
+  let header: string[] | null = null;
+  let codeIdx = -1;
+  let venues = 0;
+
+  forEachDelimitedRow(csvText, ';', (cells) => {
+    if (header === null) {
+      header = cells;
+      codeIdx = header.indexOf('code_insee');
+      if (codeIdx === -1) {
+        throw new Error(`code_insee column not found. Headers: ${header.slice(0, 10).join(', ')}`);
+      }
+      return;
     }
-  }
+    const code = foldArrondissementToCommune(cells[codeIdx]);
+    if (!code) return;
+    venues++;
+    venueCounts.set(code, (venueCounts.get(code) ?? 0) + 1);
+  });
+  log(`  ${venues} venues across ${venueCounts.size} communes`);
 
-  log('Step 3: Filtering to valid communes...');
-  const filtered = new Map<string, number>();
+  log('Step 4: Fetching the population denominator...');
+  const populations = await getCommunePopulations(log);
+
+  log('Step 5: Computing venues per 10,000 inhabitants...');
+  const values = new Map<string, number>();
+  let missingPopulation = 0;
   for (const code of validCodes) {
-    filtered.set(code, venueCounts.get(code) || 0);
+    const population = populations.get(code);
+    if (!population) {
+      // No legal population (the twelve destroyed Verdun communes, or a code
+      // geo.api does not carry): a per-capita rate is undefined, so skip
+      // rather than emit a fabricated zero.
+      missingPopulation++;
+      continue;
+    }
+    const per10k = ((venueCounts.get(code) ?? 0) / population) * 10000;
+    values.set(code, Math.round(per10k * 100) / 100);
   }
-  log(`  ${filtered.size} communes (${venueCounts.size} with venues)`);
+  log(`  ${values.size} communes scored, ${missingPopulation} skipped for want of a population`);
 
-  log('Step 4: Calculating scores and ranks...');
-  const records = buildRecords(filtered, CRITERION_ID, SOURCE, HIGHER_IS_BETTER, log);
+  log('Step 6: Calculating scores and ranks...');
+  const records = buildRecords(values, CRITERION_ID, SOURCE, HIGHER_IS_BETTER, log);
 
-  log('Step 5: Upserting to database...');
+  log('Step 7: Upserting to database...');
   const result = await upsertCriterionValues(records);
   log(`  Inserted: ${result.inserted}, Errors: ${result.errors}`);
 
-  return { inserted: result.inserted, errors: result.errors, communes: filtered.size };
+  return { inserted: result.inserted, errors: result.errors, communes: values.size };
 }
 
 // --- Local Tax ---
 
+/**
+ * DGFiP "fiscalité locale des particuliers" — taux global de taxe foncière sur
+ * les propriétés bâties (TFPB), per commune.
+ *
+ * PROVENANCE — verified 2026-09-07
+ *   portal    data.economie.gouv.fr (OpenDataSoft Explore v2.1)
+ *   dataset   fiscalite-locale-des-particuliers   (174,668 rows, several exercices)
+ *   exercice  2025, discovered at run time — 34,874 communes
+ *   field     taux_global_tfb — the all-in rate: commune share + intercommunal
+ *             share + the special/GEMAPI add-ons, which is what a household
+ *             actually pays on the base foncière bâtie
+ *
+ * WHY IT RETURNED "HTTP 400: Bad Request" — and it is NOT a stale dataset id or
+ * a typo in the query, both of which still work exactly as written.
+ * OpenDataSoft caps the /records endpoint at offset + limit <= 10000. With
+ * ~34,900 communes per exercice, paginateODS() walks past that on its 101st
+ * page, asks for offset 10000 + limit 100, and the API answers
+ *   InvalidRESTParameterError: "Invalid value for sum of offset + limit API
+ *   parameter: 10100 was found but <= 10000 is expected."
+ * The offset walk can therefore never complete on this dataset, at any page
+ * size. /exports/csv has no such cap and streams the whole selection in one
+ * request (624 KB for the three columns we need), so that is what we use.
+ * Do not "fix" this by going back to /records and paginateODS.
+ *
+ * The latest-exercice probe still uses /records deliberately: it is a group_by
+ * that returns a single row, comfortably inside the cap.
+ *
+ * KNOWN GAP: ~90 communes present in geo.api.gouv.fr have no row for the
+ * exercice — chiefly the collectivités d'outre-mer, which are outside the DGFiP
+ * fiscalité locale perimeter.
+ */
 async function ingestLocalTax(log: LogFn): Promise<IngestionResult> {
   const CRITERION_ID = 'localTax';
   const SOURCE = 'DGFiP - Fiscalité Locale';
   const HIGHER_IS_BETTER = false;
-  const BASE_URL = 'https://data.economie.gouv.fr/api/explore/v2.1/catalog/datasets/fiscalite-locale-des-particuliers/records';
+  const DATASET = 'https://data.economie.gouv.fr/api/explore/v2.1/catalog/datasets/fiscalite-locale-des-particuliers';
 
   log('Step 1: Fetching commune codes...');
   const validCodes = await getCommuneCodes();
   log(`  ${validCodes.size} communes in database`);
 
   log('Step 2: Getting latest year...');
-  const yearUrl = `${BASE_URL}?select=exercice&group_by=exercice&order_by=exercice DESC&limit=1`;
+  const yearUrl = `${DATASET}/records?select=exercice&group_by=exercice&order_by=exercice DESC&limit=1`;
   const yearResponse = await fetchWithRetry(yearUrl);
   const yearData = await yearResponse.json();
-  const latestYear = yearData.results?.[0]?.exercice || '2023';
-  log(`  Using year: ${latestYear}`);
+  const latestYear = yearData.results?.[0]?.exercice || '2025';
+  log(`  Using exercice: ${latestYear}`);
 
-  log('Step 3: Fetching tax data...');
-  const { results } = await paginateODS(
-    BASE_URL,
-    {
-      select: 'insee_com,libcom,taux_global_tfb',
-      where: `exercice="${latestYear}"`,
-      order_by: 'insee_com',
-    },
-    log
-  );
+  log('Step 3: Exporting tax rates (CSV export, not /records — see above)...');
+  const exportUrl = new URL(`${DATASET}/exports/csv`);
+  exportUrl.searchParams.set('select', 'insee_com,taux_global_tfb');
+  exportUrl.searchParams.set('where', `exercice="${latestYear}"`);
+  exportUrl.searchParams.set('delimiter', ';');
+  const exportRes = await fetchWithRetry(exportUrl.toString());
+  const csvText = await exportRes.text();
+  log(`  Downloaded ${(csvText.length / 1024).toFixed(0)} KB CSV`);
 
   const taxRates = new Map<string, number>();
-  for (const r of results) {
-    if (r.insee_com && r.taux_global_tfb != null) {
-      taxRates.set(r.insee_com as string, r.taux_global_tfb as number);
+  let header: string[] | null = null;
+  let codeIdx = -1;
+  let rateIdx = -1;
+
+  forEachDelimitedRow(csvText, ';', (cells) => {
+    if (header === null) {
+      header = cells;
+      codeIdx = header.indexOf('insee_com');
+      rateIdx = header.indexOf('taux_global_tfb');
+      if (codeIdx === -1 || rateIdx === -1) {
+        throw new Error(`Required columns not found. Headers: ${header.join(', ')}`);
+      }
+      return;
     }
-  }
+    const code = cells[codeIdx];
+    const rate = Number(cells[rateIdx]);
+    // A rate of exactly 0 is a real answer for a handful of communes; only a
+    // blank or non-numeric cell means "no data".
+    if (code && cells[rateIdx] !== '' && Number.isFinite(rate)) {
+      taxRates.set(code, rate);
+    }
+  });
+  log(`  Parsed ${taxRates.size} communes`);
 
   log('Step 4: Filtering to valid communes...');
   const filtered = new Map<string, number>();
