@@ -1664,6 +1664,28 @@ async function ingestPublicTransport(log: LogFn): Promise<IngestionResult> {
 // --- Cultural Venues ---
 
 /**
+ * Fold a Paris/Lyon/Marseille arrondissement municipal onto its parent commune.
+ *
+ * Basilic codes venues in the three PLM cities by arrondissement — 75101-75120,
+ * 69381-69389, 13201-13216 — while geo.api.gouv.fr and the communes table use
+ * the whole-commune codes 75056, 69123 and 13055. Without this fold France's
+ * three largest cities come out of the ingest with *zero* cultural venues:
+ * Paris' 3,767 entries all sit on codes that no commune row matches. Measured
+ * after folding: Paris 17.91, Lyon 10.59, Marseille 4.73 venues per 10,000.
+ *
+ * The three ranges are fixed INSEE conventions, not data we can look up here —
+ * geo.api.gouv.fr's /communes collection does not carry arrondissements.
+ */
+function foldArrondissementToCommune(code: string): string {
+  const n = Number(code);
+  if (!Number.isInteger(n)) return code;
+  if (n >= 75101 && n <= 75120) return '75056';
+  if (n >= 69381 && n <= 69389) return '69123';
+  if (n >= 13201 && n <= 13216) return '13055';
+  return code;
+}
+
+/**
  * Basilic — base des lieux et équipements culturels (DEPS, ministère de la
  * Culture) — counted per 10,000 inhabitants.
  *
@@ -1701,28 +1723,6 @@ async function ingestPublicTransport(log: LogFn): Promise<IngestionResult> {
  * A commune with no venue is recorded as 0, not as missing: "no cultural
  * facility" is a fact about the commune, not a hole in the data.
  */
-
-/**
- * Fold a Paris/Lyon/Marseille arrondissement municipal onto its parent commune.
- *
- * Basilic codes venues in the three PLM cities by arrondissement — 75101-75120,
- * 69381-69389, 13201-13216 — while geo.api.gouv.fr and the communes table use
- * the whole-commune codes 75056, 69123 and 13055. Without this fold France's
- * three largest cities come out of the ingest with *zero* cultural venues:
- * Paris' 3,767 entries all sit on codes that no commune row matches. Measured
- * after folding: Paris 17.91, Lyon 10.59, Marseille 4.73 venues per 10,000.
- *
- * The three ranges are fixed INSEE conventions, not data we can look up here —
- * geo.api.gouv.fr's /communes collection does not carry arrondissements.
- */
-function foldArrondissementToCommune(code: string): string {
-  const n = Number(code);
-  if (!Number.isInteger(n)) return code;
-  if (n >= 75101 && n <= 75120) return '75056';
-  if (n >= 69381 && n <= 69389) return '69123';
-  if (n >= 13201 && n <= 13216) return '13055';
-  return code;
-}
 async function ingestCulturalVenues(log: LogFn): Promise<IngestionResult> {
   const CRITERION_ID = 'culturalVenues';
   const SOURCE = 'Ministère de la Culture - Basilic';
