@@ -11,41 +11,67 @@ from source rather than looked at. Fixture mode fixes that.
 ## Setup
 
 ```bash
-bun run fixture:build              # once — downloads real geometry, ~25 MB into public/fixtures/
 echo "ARCHIMAP_FIXTURE=1" > .env.local
-bun run dev
+bun run dev                        # then open /map
 ```
 
-`.env.local` and `public/fixtures/` are both gitignored. The fixture contains **no credentials** —
-that is the whole point.
+`public/fixtures/` is committed, so nothing needs downloading to run the demo locally.
+`.env.local` is gitignored and contains **no credentials** — that is the whole point.
+
+To deploy this publicly, see [`DEMO_DEPLOYMENT.md`](./DEMO_DEPLOYMENT.md).
 
 ## What the fixture is
 
-`scripts/fixture/build-fixture.ts` writes `public/fixtures/`:
+`public/fixtures/` (committed, ~2.4 MB) holds **real** data for the demo région:
 
 | File | Contents |
 |------|----------|
-| `criteria.json` | the 12 criteria, parsed out of `supabase/migrations/20260226000100_seed_criteria.sql` |
+| `criteria.json` | only the criteria that actually have data |
 | `geo/regions.geojson` | 13 region outlines (france-geojson) |
-| `geo/communes-<dept>.geojson` | real commune contours for the 10 `DEMO_DEPARTEMENTS` (geo.api.gouv.fr) — 3,347 communes |
-| `scores.json` | synthetic criterion values and scores |
+| `geo/communes-<dept>.geojson` | real commune contours for the scope in `src/lib/map/region.ts` (geo.api.gouv.fr) |
+| `scores.json` | real values and **national** percentile scores |
 | `communes.json` | commune name / population / département |
-| `manifest.json` | what was generated, when |
+| `manifest.json` | per-criterion source, coverage and resolution |
 
-Geometry is **real**, from the same public sources `scripts/ingest/` already uses, so the map looks
-like France rather than coloured rectangles. Criterion values are **synthetic** — a smooth spatial
-field plus deterministic jitter, so the choropleth reads as geography rather than noise and a
-weight change produces visible structure.
+### Nothing here is synthesised
 
-Scores are not invented directly. Raw values are generated first and then run through the
-production `normalizeToScore()`, so the fixture inherits real ingest semantics: `score` is already
-flipped by `higher_is_better`, and 100 always means "good". A fixture that hand-wrote scores could
-disagree with that invariant and would then hide exactly the direction bugs the colour code exists
-to catch.
+An earlier version of the builder generated plausible-looking values from a smooth spatial
+field. That was fine for exercising the UI and actively harmful for judging the product: a
+demo whose numbers are invented cannot tell you whether the pipeline works, and it looks
+exactly like one that can. It was removed.
 
-Coverage is deliberately partial and uneven (54-98% by criterion), mirroring the real database's
-patchiness, so the composite's missing-data renormalisation is actually exercised on screen instead
-of being unreachable.
+Values now come from `fixtures-raw/`, captured by `scripts/fixture/capture-real.ts`, which
+runs **the production ingestion runners against their real sources** — INSEE, ARCEP, DVF,
+Météo France, data.culture, data.economie. A criterion with no usable capture is **omitted**,
+and the UI names it as unavailable rather than filling it in.
+
+Two rules the builder enforces, both learned the hard way:
+
+- **A criterion whose communes all share one score is treated as missing.** ARCEP's parse
+  returned a constant 100 for every commune in France; that renders as a uniform shade and
+  reads as working.
+- **Coverage is not usefulness.** `manifest.json` records `distinctScores` — how many
+  genuinely different values a source resolves inside the région. Météo France SYNOP covers
+  320/320 communes and still resolves only 3 shades, because it has 60 stations for all of
+  France. The demo banner shows this per criterion and flags anything under 10.
+
+### Capturing real data
+
+```bash
+bun run scripts/fixture/capture-real.ts --dept 42          # all criteria, slow
+bun run scripts/fixture/capture-real.ts --dept 42 --only medianIncome,localTax
+bun run fixture:build
+```
+
+The runners touch the database in exactly two places — the commune reference set and the
+upsert. `capture-real.ts` replaces both with bun's `mock.module`, so **nothing in `src/`
+changes** and the production ingestion path is untouched. The reference set comes from
+geo.api.gouv.fr instead, and writes are captured to gitignored `fixtures-raw/`.
+
+**Scoring stays national.** Values are fetched and scored across all of France exactly as
+the real pipeline does, and only then filtered to the demo département. A score of 30 means
+"30th percentile in France", not "30th percentile within Loire". The download is large at
+capture time; the fixture that ships is small.
 
 ## How routes use it
 

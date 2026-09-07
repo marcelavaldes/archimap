@@ -330,47 +330,18 @@ function buildRecords(
   return records;
 }
 
-/** Paginate an OpenDataSoft v2.1 API */
-async function paginateODS(
-  baseUrl: string,
-  params: Record<string, string>,
-  log: LogFn,
-  batchSize = 100,
-  delayMs = 50
-): Promise<{ results: Record<string, unknown>[]; total: number }> {
-  const allResults: Record<string, unknown>[] = [];
-  let offset = 0;
-  let totalCount = 0;
-  let hasMore = true;
-
-  while (hasMore) {
-    const url = new URL(baseUrl);
-    for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
-    url.searchParams.set('limit', batchSize.toString());
-    url.searchParams.set('offset', offset.toString());
-
-    const response = await fetchWithRetry(url.toString());
-    const data = await response.json();
-
-    if (offset === 0) {
-      totalCount = data.total_count;
-      log(`  Total records: ${totalCount}`);
-    }
-
-    allResults.push(...data.results);
-    offset += data.results.length;
-    hasMore = offset < totalCount && data.results.length > 0;
-
-    if (offset % 500 === 0 || !hasMore) {
-      const pct = Math.round((offset / totalCount) * 100);
-      log(`  Progress: ${offset}/${totalCount} (${pct}%)`);
-    }
-
-    await sleep(delayMs);
-  }
-
-  return { results: allResults, total: totalCount };
-}
+// paginateODS() lived here: an offset walk over the OpenDataSoft /records
+// endpoint. Both of its callers have moved off it and it is now dead.
+//
+// Keeping the reason, because the obvious repair is to bring it back:
+//   - culturalVenues' host (data.culture.gouv.fr) is retired; there is no ODS
+//     API behind its replacement at all.
+//   - localTax cannot use it even in principle. ODS caps /records at
+//     offset + limit <= 10000, so at ~34,900 communes the walk 400s on its
+//     101st page at ANY page size. That was the "HTTP 400: Bad Request".
+//     The /exports/csv endpoint has no such cap and is what localTax uses.
+//
+// So: do not reintroduce this to "fix" a paging bug on either dataset.
 
 /** Download a gzipped file and return as text */
 async function downloadGzipped(url: string): Promise<string> {

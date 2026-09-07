@@ -54,3 +54,6 @@ scripts/ingest/sql/
 
 # raw real-data capture (scripts/fixture/capture-real.ts)
 /fixtures-raw/
+
+# agent worktrees (checkouts of this repo, nested)
+/.claude/worktrees/
