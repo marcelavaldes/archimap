@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { verifyAdmin } from '@/lib/admin/auth';
 import { createAdminClient } from '@/lib/admin/supabase';
 import { normalizeToScore, calculateRanks, upsertCriterionValues, type CriterionRecord } from '@/lib/admin/scoring';
+import { isFixtureMode } from '@/lib/fixture';
+import { FIXTURE_HEADER, fixtureCriterion, fixtureWriteResult } from '@/lib/fixture/admin';
 
 export const runtime = 'nodejs';
 export const maxDuration = 60;
@@ -21,17 +23,36 @@ export async function POST(
   const { criterionId } = await params;
 
   try {
-    const supabase = createAdminClient();
+    // Fixture mode short-circuit — see src/lib/fixture/admin.ts. The parsing
+    // and scoring below run for real; only the final upsert is skipped, so the
+    // half of this handler worth exercising locally (header detection, row
+    // rejection, normalizeToScore, calculateRanks) is exercised, and the
+    // response says plainly that nothing was written.
+    let criterion: { id: string; higher_is_better: boolean; source: string } | null = null;
 
-    // Verify criterion exists
-    const { data: criterion, error: critError } = await supabase
-      .from('criteria')
-      .select('id, higher_is_better, source')
-      .eq('id', criterionId)
-      .single();
+    if (isFixtureMode()) {
+      const row = await fixtureCriterion(request, criterionId);
+      if (!row) {
+        return NextResponse.json(
+          { error: 'Criterion not found' },
+          { status: 404, headers: FIXTURE_HEADER }
+        );
+      }
+      criterion = { id: row.id, higher_is_better: row.higher_is_better, source: row.source };
+    } else {
+      const supabase = createAdminClient();
 
-    if (critError || !criterion) {
-      return NextResponse.json({ error: 'Criterion not found' }, { status: 404 });
+      // Verify criterion exists
+      const { data, error: critError } = await supabase
+        .from('criteria')
+        .select('id, higher_is_better, source')
+        .eq('id', criterionId)
+        .single();
+
+      if (critError || !data) {
+        return NextResponse.json({ error: 'Criterion not found' }, { status: 404 });
+      }
+      criterion = data;
     }
 
     // Parse form data
@@ -108,6 +129,20 @@ export async function POST(
       source: criterion.source,
       source_date: new Date().toISOString().split('T')[0],
     }));
+
+    if (isFixtureMode()) {
+      return NextResponse.json(
+        fixtureWriteResult({
+          total: rows.length,
+          inserted: 0,
+          validated: records.length,
+          errors: 0,
+          parseErrors,
+          sampleErrors: [],
+        }),
+        { headers: FIXTURE_HEADER }
+      );
+    }
 
     const result = await upsertCriterionValues(records);
 

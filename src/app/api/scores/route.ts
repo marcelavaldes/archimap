@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
-import { FIXTURE_MODE, loadFixture, type FixtureScores } from '@/lib/fixture';
+import { isFixtureMode, loadFixture, type FixtureScores } from '@/lib/fixture';
 
 export const runtime = 'nodejs';
 
@@ -46,7 +46,7 @@ export async function GET(request: NextRequest) {
   }
 
   // Fixture mode short-circuit — see src/lib/fixture/index.ts.
-  if (FIXTURE_MODE) {
+  if (isFixtureMode()) {
     return serveFixture(request, parent, criterionIds);
   }
 

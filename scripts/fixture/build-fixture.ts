@@ -43,10 +43,38 @@ interface FixtureCriterion {
 }
 
 /**
+ * The same rows as the `criteria` table actually stores them.
+ *
+ * /api/criteria projects the table into the camelCase shape the map wants and
+ * drops everything the map has no use for; the admin panel edits the raw row,
+ * including the four columns that projection discards (enabled, display_order,
+ * ingestion_type, api_config). So the fixture emits both shapes from one parse
+ * rather than trying to reconstruct the wider one from the narrower.
+ */
+interface FixtureAdminCriterion {
+  id: string;
+  name: string;
+  name_en: string;
+  category: string;
+  description: string;
+  unit: string;
+  source: string;
+  last_updated: string | null;
+  higher_is_better: boolean;
+  color_scale_low: string;
+  color_scale_mid: string;
+  color_scale_high: string;
+  enabled: boolean;
+  display_order: number;
+  ingestion_type: string;
+  api_config: Record<string, string> | null;
+}
+
+/**
  * Parse the criteria straight out of the seed migration rather than duplicating
  * them here, so the fixture cannot drift from what a real database would hold.
  */
-async function parseCriteriaFromSeed(): Promise<FixtureCriterion[]> {
+async function parseCriteriaFromSeed(): Promise<FixtureAdminCriterion[]> {
   const sql = await readFile(SEED_SQL, 'utf8');
   const body = sql.slice(sql.indexOf('VALUES') + 'VALUES'.length);
 
@@ -69,15 +97,43 @@ async function parseCriteriaFromSeed(): Promise<FixtureCriterion[]> {
   }
 
   return tuples.map((t) => {
-    const f = splitFields(t);
+    const fields = splitFields(t);
+    const apiConfig = fields[15]?.trim() ?? 'NULL';
     return {
-      id: unquote(f[0]), name: unquote(f[1]), nameEn: unquote(f[2]),
-      category: unquote(f[3]), description: unquote(f[4]), unit: unquote(f[5]),
-      source: unquote(f[6]), lastUpdated: unquote(f[7]),
-      higherIsBetter: f[8].trim() === 'true',
-      colorScale: { low: unquote(f[9]), mid: unquote(f[10]), high: unquote(f[11]) },
+      id: unquote(fields[0]),
+      name: unquote(fields[1]),
+      name_en: unquote(fields[2]),
+      category: unquote(fields[3]),
+      description: unquote(fields[4]),
+      unit: unquote(fields[5]),
+      source: unquote(fields[6]),
+      last_updated: fields[7].trim() === 'NULL' ? null : unquote(fields[7]),
+      higher_is_better: fields[8].trim() === 'true',
+      color_scale_low: unquote(fields[9]),
+      color_scale_mid: unquote(fields[10]),
+      color_scale_high: unquote(fields[11]),
+      enabled: fields[12].trim() === 'true',
+      display_order: Number(fields[13].trim()),
+      ingestion_type: unquote(fields[14]),
+      api_config: apiConfig === 'NULL' ? null : JSON.parse(unquote(apiConfig)),
     };
   });
+}
+
+/** The narrower camelCase shape /api/criteria serves to the map. */
+function toPublicCriterion(c: FixtureAdminCriterion): FixtureCriterion {
+  return {
+    id: c.id,
+    name: c.name,
+    nameEn: c.name_en,
+    category: c.category,
+    description: c.description,
+    unit: c.unit,
+    source: c.source,
+    lastUpdated: c.last_updated ?? '',
+    higherIsBetter: c.higher_is_better,
+    colorScale: { low: c.color_scale_low, mid: c.color_scale_mid, high: c.color_scale_high },
+  };
 }
 
 function splitFields(tuple: string): string[] {
@@ -270,7 +326,7 @@ async function main() {
   // --- criterion values, straight from the real capture ---
   const scores: Record<string, Record<string, { value: number; score: number; rank: number }>> = {};
   const provenance: Record<string, unknown> = {};
-  const shipped: FixtureCriterion[] = [];
+  const shipped: FixtureAdminCriterion[] = [];
 
   for (const criterion of allCriteria) {
     const capture = captures.get(criterion.id);
@@ -306,7 +362,11 @@ async function main() {
       capture.records.filter((r) => communeMeta.has(r.commune_code)).map((r) => r.score)
     ).size;
 
-    shipped.push({ ...criterion, source: capture.source ?? criterion.source, lastUpdated: capture.sourceDate ?? criterion.lastUpdated });
+    shipped.push({
+      ...criterion,
+      source: capture.source ?? criterion.source,
+      last_updated: capture.sourceDate ?? criterion.last_updated,
+    });
     provenance[criterion.id] = {
       status: 'real',
       source: capture.source,
@@ -329,9 +389,22 @@ async function main() {
     throw new Error('No criteria had usable real data — refusing to build an empty fixture.');
   }
 
+  // Public camelCase shape, keyed by id — what /api/criteria serves to the map.
+  // Only criteria that actually have data, so the map never renders a slider
+  // that cannot move anything.
   await writeFile(
     join(OUT, 'criteria.json'),
-    JSON.stringify(Object.fromEntries(shipped.map((c) => [c.id, c])))
+    JSON.stringify(Object.fromEntries(shipped.map((c) => [c.id, toPublicCriterion(c)])))
+  );
+
+  // Raw-row shape in display_order — what /api/admin/criteria serves. ALL
+  // twelve, not just the ones with data: the admin panel manages criteria, and
+  // a criterion whose source is broken is exactly what an operator needs to
+  // see. Ordered here rather than in the route so the fixture, like the real
+  // query's `.order('display_order')`, has one row order.
+  await writeFile(
+    join(OUT, 'admin-criteria.json'),
+    JSON.stringify([...allCriteria].sort((a, b) => a.display_order - b.display_order))
   );
   await writeFile(join(OUT, 'scores.json'), JSON.stringify(scores));
   await writeFile(join(OUT, 'communes.json'), JSON.stringify(Object.fromEntries(communeMeta)));

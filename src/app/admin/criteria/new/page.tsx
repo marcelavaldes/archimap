@@ -3,26 +3,10 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
-import { CriterionForm } from '../[id]/page';
+import { adminFetch, errorMessage, unpersistedNote } from '@/lib/admin/client';
+import { CriterionForm, type CriterionData } from '../../_components/CriterionForm';
 
-const defaultForm: {
-  id: string;
-  name: string;
-  name_en: string;
-  category: string;
-  description: string;
-  unit: string;
-  source: string;
-  last_updated: string | null;
-  higher_is_better: boolean;
-  color_scale_low: string;
-  color_scale_mid: string;
-  color_scale_high: string;
-  enabled: boolean;
-  display_order: number;
-  ingestion_type: string;
-  api_config: Record<string, string> | null;
-} = {
+const defaultForm: CriterionData = {
   id: '',
   name: '',
   name_en: '',
@@ -46,27 +30,30 @@ export default function NewCriterionPage() {
   const [form, setForm] = useState(defaultForm);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  const [notice, setNotice] = useState<string | null>(null);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setSaving(true);
     setError('');
+    setNotice(null);
 
     try {
-      const res = await fetch('/api/admin/criteria', {
+      const result = await adminFetch<unknown>('/api/admin/criteria', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(form),
       });
 
-      if (!res.ok) {
-        const data = await res.json();
-        throw new Error(data.error || 'Erreur de création');
+      const note = unpersistedNote(result);
+      if (note) {
+        setNotice(note);
+        return;
       }
 
       router.push('/admin/criteria');
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Erreur inconnue');
+      setError(errorMessage(err));
     } finally {
       setSaving(false);
     }
@@ -86,6 +73,7 @@ export default function NewCriterionPage() {
         saving={saving}
         error={error}
         isNew={true}
+        notice={notice}
       />
     </div>
   );

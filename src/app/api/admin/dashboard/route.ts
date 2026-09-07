@@ -1,6 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { verifyAdmin } from '@/lib/admin/auth';
 import { createAdminClient } from '@/lib/admin/supabase';
+import { isFixtureMode } from '@/lib/fixture';
+import {
+  FIXTURE_HEADER,
+  fixtureCommuneCount,
+  fixtureCoverage,
+  fixtureCriteria,
+  fixtureValueCount,
+} from '@/lib/fixture/admin';
 
 export const runtime = 'nodejs';
 
@@ -12,6 +20,36 @@ export async function GET(request: NextRequest) {
   if (authError) return authError;
 
   try {
+    // Fixture mode short-circuit — see src/lib/fixture/admin.ts. No-op unless
+    // ARCHIMAP_FIXTURE=1, so the Supabase path below is unchanged in
+    // production. Inside the try on purpose: an unbuilt fixture throws
+    // FixtureMissingError, whose message is the instruction to run
+    // `bun run fixture:build`, and outside the try the framework would swallow
+    // it into an anonymous HTML 500.
+    if (isFixtureMode()) {
+      const [criteria, coverage, totalCommunes, totalValues] = await Promise.all([
+        fixtureCriteria(request),
+        fixtureCoverage(request),
+        fixtureCommuneCount(request),
+        fixtureValueCount(request),
+      ]);
+      return NextResponse.json(
+        {
+          totalCriteria: criteria.length,
+          enabledCriteria: criteria.filter((c) => c.enabled).length,
+          totalCommunes,
+          totalValues,
+          averageCoverage: coverage.length
+            ? Math.round(
+                (coverage.reduce((sum, c) => sum + c.coverage_percent, 0) / coverage.length) * 100
+              ) / 100
+            : 0,
+          coverage,
+        },
+        { headers: FIXTURE_HEADER }
+      );
+    }
+
     const supabase = createAdminClient();
 
     // Fetch criteria count

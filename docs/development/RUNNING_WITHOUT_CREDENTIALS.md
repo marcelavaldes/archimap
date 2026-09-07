@@ -1,4 +1,4 @@
-# Running the map without credentials
+# Running the app without credentials
 
 The repo ships no `.env`, and it should not: every data route goes through Supabase, and nothing in
 here should reach a live project. The consequence is that a fresh clone renders `/map` as an empty
@@ -7,6 +7,11 @@ shell — the page and basemap load fine, and every data call returns 500 with
 
 That made the map effectively unobservable, so its rendering behaviour was being reasoned about
 from source rather than looked at. Fixture mode fixes that.
+
+`/admin` was worse. It needs `ADMIN_PASSWORD` and `ADMIN_SESSION_SECRET` *before* Supabase is even
+reached, so without them the middleware fails closed and a fresh clone got a plain-text 500 instead
+of a screen — nothing to look at at all. Fixture mode covers the admin panel too, which is how the
+defects fixed alongside this were found.
 
 ## Setup
 
@@ -26,7 +31,8 @@ To deploy this publicly, see [`DEMO_DEPLOYMENT.md`](./DEMO_DEPLOYMENT.md).
 
 | File | Contents |
 |------|----------|
-| `criteria.json` | only the criteria that actually have data |
+| `criteria.json` | camelCase shape `/api/criteria` serves — **only the criteria that actually have data** |
+| `admin-criteria.json` | all 12 rows in raw `criteria`-table shape, for the admin screens. The four columns the public projection drops (`enabled`, `display_order`, `ingestion_type`, `api_config`) are what those screens edit — and a criterion whose source is broken is exactly what an operator needs to see, so this file keeps all of them |
 | `geo/regions.geojson` | 13 region outlines (france-geojson) |
 | `geo/communes-<dept>.geojson` | real commune contours for the scope in `src/lib/map/region.ts` (geo.api.gouv.fr) |
 | `scores.json` | real values and **national** percentile scores |
@@ -75,25 +81,71 @@ capture time; the fixture that ships is small.
 
 ## How routes use it
 
-`src/lib/fixture/index.ts` exports `FIXTURE_MODE` (`process.env.ARCHIMAP_FIXTURE === '1'`). Three
-routes short-circuit on it before touching Supabase — `/api/criteria`, `/api/geo/[level]` and
-`/api/scores` — and the fixture is read over HTTP from the app's own origin rather than the
-filesystem, so it works identically under `runtime = 'edge'`.
+`src/lib/fixture/index.ts` exports `isFixtureMode()` (`process.env.ARCHIMAP_FIXTURE === '1'`). Every
+read route short-circuits on it before touching Supabase — `/api/criteria`, `/api/geo/[level]`,
+`/api/scores`, and everything under `/api/admin/` — and the fixture is read over HTTP from the app's
+own origin rather than the filesystem, so it works identically under `runtime = 'edge'`.
+
+It is a function, not a constant, so it is evaluated per call. That is what lets
+`tests/admin-fixture-auth.test.ts` flip the flag inside one process and assert that with it unset
+the fail-closed behaviour is unchanged — an assertion a module-level const would make unwritable.
 
 With the flag unset — the default, including production — none of that code runs, and the Supabase
 paths are exactly as they were.
 
+## Logging into the admin panel
+
+Password: **`dev`**.
+
+`ADMIN_PASSWORD` and `ADMIN_SESSION_SECRET` have published fixture substitutes (`dev`, and a
+signing key spelled out in `src/lib/admin/session.ts`). They are reachable only through
+`isFixtureAdminAllowed()`, which needs **both** `ARCHIMAP_FIXTURE=1` **and** a non-production
+`NODE_ENV`, and only when the real variable is absent — a configured secret always wins.
+
+The extra `NODE_ENV` lock is deliberate. Serving synthetic geometry from a production build would
+merely be wrong; accepting a password published in this repo would be a hole. So the credential
+substitution — and only the credential substitution — carries a second lock, and a production build
+falls back to the existing "500, name the missing variable" behaviour.
+
+Everything else about login is the real thing: the same handler, the same HMAC, the same cookie, the
+same middleware gate. Only the two input strings are swapped, so what you see locally is the
+production auth path.
+
+## What writes do
+
+Nothing is persisted, and every screen says so.
+
+- The panel shows a standing amber banner while `ARCHIMAP_FIXTURE=1` — not a toast, because a
+  notice that fades is one the next person to look does not see.
+- Toggling, editing, creating and deleting a criterion apply to a **process-lifetime in-memory
+  overlay**, so the UI actually responds, and the response carries `persisted: false` with a note the
+  screen renders. Restarting the dev server discards it.
+- A CSV upload is parsed, validated and scored for real — that is the part worth exercising — and
+  then not written. The result reports lines read versus 0 written.
+- "Tout supprimer" deletes nothing and reports how many rows it *would* have deleted.
+- An ingestion run stops before the runner: it would fetch a live open-data API and then fail to
+  write. The SSE stream, log console and result banner all run; the banner reads **Dry run**, in
+  amber, never "Success".
+
 ## Screenshots
 
 ```bash
-node scripts/dev/screenshot-map.mjs --out .screenshots
-# --base http://localhost:3000   --scenario single|composite|all
+node scripts/dev/screenshot-map.mjs   --out .screenshots   # /map
+node scripts/dev/screenshot-admin.mjs --out .screenshots   # /admin, all screens
+# --base http://localhost:3000
 ```
 
-Requires an existing Playwright install; it is not a dependency of this repo, and the script says
-so if it cannot find one.
+Both require an existing Playwright install; it is not a dependency of this repo, and the scripts
+say so if they cannot find one.
+
+`screenshot-admin.mjs` is a check as well as a camera: it logs in through the form, asserts the deep
+link kept its URL across the middleware rewrite, asserts the fixture banner is present on every
+screen, asserts the toggle both moved and admitted it was not persisted, and exits non-zero on any
+console error or page error.
 
 **On waiting.** MapLibre tiles ~25 MB of commune GeoJSON in a worker; under software WebGL that
 takes ~11-15 s. A fixed sleep photographs an empty map and invites the conclusion that the
 choropleth is broken — it is not. `waitForChoropleth()` polls the live map for actually-rendered
-features, so a slow machine produces a late screenshot rather than a wrong one.
+features, so a slow machine produces a late screenshot rather than a wrong one. The admin screens
+are lighter but have the same shape of problem: they fetch on mount, so each shot waits for a
+selector that only the loaded state renders rather than for a timer.

@@ -6,29 +6,44 @@ import { usePathname } from 'next/navigation';
 
 interface AdminContextType {
   authenticated: boolean;
+  /** True when the panel is reading synthetic fixture data instead of a database. */
+  fixture: boolean;
 }
 
-const AdminContext = createContext<AdminContextType>({ authenticated: false });
+const AdminContext = createContext<AdminContextType>({ authenticated: false, fixture: false });
 
 export function useAdminContext() {
   return useContext(AdminContext);
 }
 
+interface SessionResponse {
+  authenticated: boolean;
+  fixture: boolean;
+}
+
 export default function AdminLayout({ children }: { children: React.ReactNode }) {
   const [authenticated, setAuthenticated] = useState(false);
+  const [fixture, setFixture] = useState(false);
   const [checking, setChecking] = useState(true);
   const [password, setPassword] = useState('');
   const [loginError, setLoginError] = useState('');
+  const [submitting, setSubmitting] = useState(false);
   const pathname = usePathname();
 
   const checkAuth = useCallback(async () => {
     try {
-      const res = await fetch('/api/admin/dashboard');
-      if (res.ok) {
-        setAuthenticated(true);
-      }
+      // /api/admin/session, not /api/admin/dashboard. The old probe ran four
+      // COUNT(*) queries and a scan of the coverage view purely to read
+      // `res.ok`, on every navigation into the panel — and twice on the
+      // dashboard itself, which then fetched the same aggregate again to
+      // actually use it.
+      const res = await fetch('/api/admin/session', { cache: 'no-store' });
+      if (!res.ok) return;
+      const session: SessionResponse = await res.json();
+      setAuthenticated(session.authenticated === true);
+      setFixture(session.fixture === true);
     } catch {
-      // Not authenticated
+      // Leave unauthenticated; the login form is the correct fallback.
     } finally {
       setChecking(false);
     }
@@ -41,6 +56,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoginError('');
+    setSubmitting(true);
 
     try {
       const res = await fetch('/api/admin/login', {
@@ -55,11 +71,24 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
         // dashboard's payload. Reloading re-runs the gate with the new session
         // cookie and serves the page that was actually requested.
         window.location.reload();
-      } else {
+        return;
+      }
+
+      // Only a 401 means the password was wrong. A 500 means the server is
+      // misconfigured — ADMIN_PASSWORD or ADMIN_SESSION_SECRET missing — and
+      // reporting that as "mot de passe incorrect" sends the operator off to
+      // retype a password that was never the problem. The routes go to the
+      // trouble of naming the missing variable; show it.
+      if (res.status === 401) {
         setLoginError('Mot de passe incorrect');
+      } else {
+        const body = await res.json().catch(() => null);
+        setLoginError(body?.error ?? `Erreur serveur (${res.status})`);
       }
     } catch {
       setLoginError('Erreur de connexion');
+    } finally {
+      setSubmitting(false);
     }
   };
 
@@ -81,6 +110,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             placeholder="Mot de passe admin"
+            aria-label="Mot de passe admin"
             className="w-full px-4 py-2 border border-gray-300 rounded-lg mb-4 focus:outline-none focus:ring-2 focus:ring-blue-500"
             autoFocus
           />
@@ -89,9 +119,10 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
           )}
           <button
             type="submit"
-            className="w-full bg-blue-600 text-white py-2 rounded-lg hover:bg-blue-700 transition-colors"
+            disabled={submitting}
+            className="w-full bg-blue-600 text-white py-2 rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors"
           >
-            Connexion
+            {submitting ? 'Connexion…' : 'Connexion'}
           </button>
         </form>
       </div>
@@ -106,7 +137,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
   ];
 
   return (
-    <AdminContext.Provider value={{ authenticated }}>
+    <AdminContext.Provider value={{ authenticated, fixture }}>
       <div className="min-h-screen bg-gray-50 flex">
         {/* Sidebar navigation */}
         <nav className="w-56 bg-white border-r border-gray-200 flex flex-col">
@@ -147,6 +178,26 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
 
         {/* Main content */}
         <main className="flex-1 p-6 overflow-auto">
+          {/*
+            A standing banner, not a toast. Every number below it is synthetic
+            and every write below it is discarded, and that has to be true on
+            screen for as long as it is true of the data — a notice that fades
+            after three seconds is a notice the next person to look does not see.
+          */}
+          {fixture && (
+            <div
+              data-testid="fixture-banner"
+              className="mb-6 flex items-start gap-3 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3"
+            >
+              <span aria-hidden className="mt-0.5 text-amber-600">⚠</span>
+              <div className="text-sm text-amber-900">
+                <strong className="font-semibold">Mode fixture (ARCHIMAP_FIXTURE=1)</strong> — aucune
+                base de données n’est connectée. Les chiffres proviennent de{' '}
+                <code className="font-mono text-xs">public/fixtures/</code> et sont synthétiques ;
+                les modifications sont appliquées en mémoire et perdues au redémarrage.
+              </div>
+            </div>
+          )}
           {children}
         </main>
       </div>

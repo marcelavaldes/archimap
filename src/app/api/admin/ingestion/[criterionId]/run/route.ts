@@ -2,9 +2,18 @@ import { NextRequest } from 'next/server';
 import { verifyAdmin } from '@/lib/admin/auth';
 import { createAdminClient } from '@/lib/admin/supabase';
 import { ingestionRunners } from '@/lib/admin/ingestion-runners';
+import { isFixtureMode, type FixtureAdminCriterion } from '@/lib/fixture';
+import { NOT_PERSISTED, fixtureCriterion } from '@/lib/fixture/admin';
 
 export const runtime = 'nodejs';
 export const maxDuration = 300;
+
+function jsonError(message: string, status: number): Response {
+  return new Response(JSON.stringify({ error: message }), {
+    status,
+    headers: { 'Content-Type': 'application/json' },
+  });
+}
 
 /**
  * POST /api/admin/ingestion/[criterionId]/run
@@ -19,38 +28,41 @@ export async function POST(
 
   const { criterionId } = await params;
 
-  // Validate criterion exists and is API-type
-  const supabase = createAdminClient();
-  const { data: criterion, error } = await supabase
-    .from('criteria')
-    .select('id, name, ingestion_type, api_config')
-    .eq('id', criterionId)
-    .single();
+  const fixture = isFixtureMode();
 
-  if (error || !criterion) {
-    return new Response(
-      JSON.stringify({ error: 'Criterion not found' }),
-      { status: 404, headers: { 'Content-Type': 'application/json' } }
-    );
+  // Validate criterion exists and is API-type.
+  //
+  // Wrapped: createAdminClient() throws outright when SUPABASE_SERVICE_ROLE_KEY
+  // is unset, and this used to be outside any try. The framework turned that
+  // into an HTML 500, the ingestion page's `await res.json()` choked on the
+  // HTML, and the operator was told "Connection lost" for what is a missing
+  // environment variable.
+  let criterion: Pick<FixtureAdminCriterion, 'id' | 'name' | 'ingestion_type' | 'api_config'> | null;
+  try {
+    if (fixture) {
+      criterion = await fixtureCriterion(request, criterionId);
+    } else {
+      const { data } = await createAdminClient()
+        .from('criteria')
+        .select('id, name, ingestion_type, api_config')
+        .eq('id', criterionId)
+        .single();
+      criterion = data;
+    }
+  } catch (err) {
+    return jsonError(err instanceof Error ? err.message : 'Internal error', 500);
   }
 
-  if (criterion.ingestion_type !== 'api') {
-    return new Response(
-      JSON.stringify({ error: 'Criterion is not API-based' }),
-      { status: 400, headers: { 'Content-Type': 'application/json' } }
-    );
-  }
+  if (!criterion) return jsonError('Criterion not found', 404);
+  if (criterion.ingestion_type !== 'api') return jsonError('Criterion is not API-based', 400);
 
   const runner = ingestionRunners[criterionId];
-  if (!runner) {
-    return new Response(
-      JSON.stringify({ error: `No ingestion runner for ${criterionId}` }),
-      { status: 400, headers: { 'Content-Type': 'application/json' } }
-    );
-  }
+  if (!runner) return jsonError(`No ingestion runner for ${criterionId}`, 400);
 
   // Stream logs via SSE
   const encoder = new TextEncoder();
+  const criterionName = criterion.name;
+  const apiConfig = criterion.api_config;
 
   const stream = new ReadableStream({
     async start(controller) {
@@ -66,9 +78,34 @@ export async function POST(
 
       const log = (message: string) => send('log', { message });
 
-      send('start', { criterionId, criterionName: criterion.name });
-      log(`Starting ingestion for: ${criterion.name}`);
+      send('start', { criterionId, criterionName });
+      log(`Starting ingestion for: ${criterionName}`);
       log('');
+
+      // Fixture mode stops here, before the runner. A runner fetches from a
+      // live open-data API and then upserts through the service-role key — the
+      // fetch would work and the write would not, so the honest thing is not to
+      // start. The SSE transport, the log console and the result banner are all
+      // still exercised; only the work is skipped, and the console says which.
+      if (fixture) {
+        log('=== MODE FIXTURE — DRY RUN ===');
+        log(`Runner disponible : ${apiConfig?.script ?? criterionId}`);
+        log(`Source : ${apiConfig?.description ?? 'open data'}`);
+        log('');
+        log('Aucun appel réseau, aucune écriture en base.');
+        log(NOT_PERSISTED);
+        send('done', {
+          inserted: 0,
+          errors: 0,
+          communes: 0,
+          persisted: false,
+          fixtureNote: `Dry run (mode fixture) — le runner « ${apiConfig?.script ?? criterionId} » n’a pas été exécuté.`,
+        });
+        controller.close();
+        return;
+      }
+
+      const supabase = createAdminClient();
 
       try {
         const result = await runner(log);

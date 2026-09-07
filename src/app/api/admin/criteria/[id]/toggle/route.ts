@@ -1,6 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { verifyAdmin } from '@/lib/admin/auth';
 import { createAdminClient } from '@/lib/admin/supabase';
+import { isFixtureMode } from '@/lib/fixture';
+import {
+  FIXTURE_HEADER,
+  fixtureCriterion,
+  fixtureWriteResult,
+  patchCriterion,
+} from '@/lib/fixture/admin';
 
 export const runtime = 'nodejs';
 
@@ -17,6 +24,25 @@ export async function PATCH(
   const { id } = await params;
 
   try {
+    // Fixture mode short-circuit — see src/lib/fixture/admin.ts. No-op unless
+    // ARCHIMAP_FIXTURE=1, so the Supabase path below is unchanged in
+    // production. Inside the try so an unbuilt fixture reports the message that
+    // tells you to run `bun run fixture:build`.
+    if (isFixtureMode()) {
+      const current = await fixtureCriterion(request, id);
+      if (!current) {
+        return NextResponse.json(
+          { error: 'Criterion not found' },
+          { status: 404, headers: FIXTURE_HEADER }
+        );
+      }
+      const enabled = !current.enabled;
+      patchCriterion(id, { enabled });
+      return NextResponse.json(fixtureWriteResult({ ...current, enabled }), {
+        headers: FIXTURE_HEADER,
+      });
+    }
+
     const supabase = createAdminClient();
 
     // Get current state

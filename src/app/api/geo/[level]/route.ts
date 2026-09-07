@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
-import { FIXTURE_MODE, loadFixture, type FixtureScores } from '@/lib/fixture';
+import { isFixtureMode, loadFixture, type FixtureScores } from '@/lib/fixture';
 
 export const runtime = 'edge';
 
@@ -41,7 +41,7 @@ export async function GET(
 
   // Fixture mode short-circuit — see src/lib/fixture/index.ts. No-op unless
   // ARCHIMAP_FIXTURE=1, so the Supabase path below is unchanged in production.
-  if (FIXTURE_MODE) {
+  if (isFixtureMode()) {
     return serveFixture(request, level as AdminLevel, parentCode, criterionId);
   }
 

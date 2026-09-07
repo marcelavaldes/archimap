@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { verifyAdmin } from '@/lib/admin/auth';
 import { createAdminClient } from '@/lib/admin/supabase';
+import { isFixtureMode } from '@/lib/fixture';
+import { FIXTURE_HEADER, fixtureCoverage, fixtureCriteria } from '@/lib/fixture/admin';
 
 export const runtime = 'nodejs';
 
@@ -12,6 +14,31 @@ export async function GET(request: NextRequest) {
   if (authError) return authError;
 
   try {
+    // Fixture mode short-circuit — see src/lib/fixture/admin.ts. No-op unless
+    // ARCHIMAP_FIXTURE=1, so the Supabase path below is unchanged in
+    // production. Inside the try so an unbuilt fixture reports the message that
+    // tells you to run `bun run fixture:build`.
+    if (isFixtureMode()) {
+      const [criteria, coverage] = await Promise.all([
+        fixtureCriteria(request),
+        fixtureCoverage(request),
+      ]);
+      const byId = new Map(coverage.map((c) => [c.criterion_id, c]));
+      return NextResponse.json(
+        criteria
+          .filter((c) => c.ingestion_type === 'api')
+          .map((c) => ({
+            id: c.id,
+            name: c.name,
+            ingestion_type: c.ingestion_type,
+            api_config: c.api_config,
+            last_updated: c.last_updated,
+            coverage: byId.get(c.id) ?? null,
+          })),
+        { headers: FIXTURE_HEADER }
+      );
+    }
+
     const supabase = createAdminClient();
 
     // Get criteria with ingestion_type = 'api'

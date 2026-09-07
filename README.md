@@ -28,13 +28,17 @@ cp .env.example .env.local
 
 ### Sans identifiants Supabase
 
-La carte est utilisable sans aucun identifiant, sur des données de test :
+La carte **et le panneau d'administration** sont utilisables sans aucun identifiant, sur des données
+de test :
 
 ```bash
 bun run fixture:build              # une fois — géométries réelles des communes
 echo "ARCHIMAP_FIXTURE=1" > .env.local
-bun run dev                        # puis /map
+bun run dev                        # puis /map, ou /admin (mot de passe : dev)
 ```
+
+En mode fixture, aucune écriture n'est enregistrée : chaque modification est appliquée en mémoire et
+signalée comme non persistée. Sans le drapeau — donc en production — rien de tout cela ne s'exécute.
 
 Voir [`docs/development/RUNNING_WITHOUT_CREDENTIALS.md`](docs/development/RUNNING_WITHOUT_CREDENTIALS.md).
 

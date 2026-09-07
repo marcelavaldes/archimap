@@ -10,6 +10,7 @@
  * Everything here uses Web Crypto rather than node:crypto so it runs unchanged
  * in middleware (Edge runtime) and in the nodejs route handlers.
  */
+import { isFixtureAdminAllowed } from '@/lib/fixture';
 
 /** Cookie the minted session token is stored in. */
 export const ADMIN_COOKIE = 'admin_token';
@@ -32,6 +33,24 @@ export interface AdminSession {
 }
 
 /**
+ * The password fixture mode accepts, and the key it signs with.
+ *
+ * Both are published in this repository, so they are credentials in name only.
+ * They exist so a fresh clone with no .env can reach the admin screens at all —
+ * without them the panel is not merely empty, it is unopenable, which is how it
+ * came to be shipped broken with nobody noticing.
+ *
+ * They are reachable only through isFixtureAdminAllowed(), which requires
+ * ARCHIMAP_FIXTURE=1 *and* a non-production NODE_ENV, and only when the real
+ * variable is absent — a configured secret always wins. The point is that the
+ * dev login goes through the same login handler, the same HMAC, the same cookie
+ * and the same middleware gate as production: only the two input strings are
+ * substituted, so what you observe locally is the real auth path.
+ */
+export const FIXTURE_ADMIN_PASSWORD = 'dev';
+const FIXTURE_SESSION_SECRET = 'archimap-fixture-mode-signing-key-not-a-secret-0000';
+
+/**
  * The HMAC signing key, or null when it is missing or too weak to trust.
  *
  * Referenced statically so the Next.js bundler can inline it into the Edge
@@ -39,8 +58,25 @@ export interface AdminSession {
  */
 export function getSessionSecret(): string | null {
   const secret = process.env.ADMIN_SESSION_SECRET;
-  if (!secret || secret.length < MIN_SECRET_LENGTH) return null;
-  return secret;
+  if (secret && secret.length >= MIN_SECRET_LENGTH) return secret;
+  if (isFixtureAdminAllowed()) return FIXTURE_SESSION_SECRET;
+  return null;
+}
+
+/**
+ * The shared admin password, or null when it is not configured.
+ *
+ * Same rule as getSessionSecret(): a configured ADMIN_PASSWORD always wins, and
+ * the fixture substitute is only offered when there is none *and* fixture mode
+ * has cleared both of its locks. With the flag unset this returns exactly what
+ * `process.env.ADMIN_PASSWORD` used to be read as inline, so the login
+ * handler's "500, name the missing variable" behaviour is unchanged.
+ */
+export function getAdminPassword(): string | null {
+  const password = process.env.ADMIN_PASSWORD;
+  if (password) return password;
+  if (isFixtureAdminAllowed()) return FIXTURE_ADMIN_PASSWORD;
+  return null;
 }
 
 /**
