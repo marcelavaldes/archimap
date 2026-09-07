@@ -27,7 +27,8 @@ import { DEMO_REGION } from '../../src/lib/map/region';
 const ROOT = process.cwd();
 const OUT = join(ROOT, 'public', 'fixtures');
 const RAW = join(ROOT, 'fixtures-raw');
-const SEED_SQL = join(ROOT, 'supabase', 'migrations', '20260226000100_seed_criteria.sql');
+const MIGRATIONS = join(ROOT, 'supabase', 'migrations');
+const SEED_SQL = join(MIGRATIONS, '20260226000100_seed_criteria.sql');
 
 interface FixtureCriterion {
   id: string;
@@ -118,6 +119,50 @@ async function parseCriteriaFromSeed(): Promise<FixtureAdminCriterion[]> {
       api_config: apiConfig === 'NULL' ? null : JSON.parse(unquote(apiConfig)),
     };
   });
+}
+
+/**
+ * Apply later `UPDATE criteria SET ... WHERE id = '...'` migrations on top of
+ * the seed.
+ *
+ * The seed INSERT is not the final state of the table — a criterion can be
+ * relabelled afterwards, as internetSpeed was once ARCEP's 100 Mbit/s tier
+ * saturated and the runner moved to gigabit. Reading only the seed would ship a
+ * fixture whose labels disagree with the database any real deployment holds,
+ * and the visible symptom is the worst kind: a percentage displayed under the
+ * unit "Mbps", which looks like a units bug in the UI rather than a stale
+ * fixture.
+ *
+ * Deliberately narrow: simple `col = 'literal'` assignments against a single
+ * id. Anything more (expressions, joins, multi-row updates) is skipped rather
+ * than half-applied — a fixture that silently mis-parses a migration would be
+ * worse than one that plainly ignores it.
+ */
+async function applyCriteriaUpdates(
+  criteria: FixtureAdminCriterion[],
+  log: (m: string) => void
+): Promise<void> {
+  const byId = new Map(criteria.map((c) => [c.id, c as unknown as Record<string, unknown>]));
+  const files = (await readdir(MIGRATIONS)).filter((f) => f.endsWith('.sql')).sort();
+
+  for (const file of files) {
+    const sql = await readFile(join(MIGRATIONS, file), 'utf8');
+    // Strip line comments so a commented-out UPDATE is not applied.
+    const bare = sql.replace(/^\s*--.*$/gm, '');
+    const re = /UPDATE\s+criteria\s+SET\s+([\s\S]*?)\s+WHERE\s+id\s*=\s*'([^']+)'\s*;/gi;
+
+    for (const match of bare.matchAll(re)) {
+      const target = byId.get(match[2]);
+      if (!target) continue;
+
+      for (const assignment of match[1].split(',')) {
+        const kv = /^\s*(\w+)\s*=\s*'((?:[^']|'')*)'\s*$/.exec(assignment);
+        if (!kv) continue; // not a plain literal — leave it alone
+        target[kv[1]] = kv[2].replace(/''/g, "'");
+      }
+      log(`  applied ${file}: ${match[2]}`);
+    }
+  }
 }
 
 /** The narrower camelCase shape /api/criteria serves to the map. */
@@ -263,6 +308,7 @@ async function main() {
   }
 
   const allCriteria = await parseCriteriaFromSeed();
+  await applyCriteriaUpdates(allCriteria, (m) => console.log(m));
   console.log(`Parsed ${allCriteria.length} criteria from the seed migration.`);
 
   const captures = await loadCaptures();

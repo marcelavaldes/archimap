@@ -1870,6 +1870,38 @@ async function ingestLocalTax(log: LogFn): Promise<IngestionResult> {
 
 // --- Internet Speed ---
 
+/**
+ * ARCEP "Ma connexion internet" — share of premises eligible for gigabit fibre.
+ *
+ * PROVENANCE — verified 2026-09-07
+ *   https://data.arcep.fr/fixe/maconnexioninternet/statistiques/last/commune/commune_debit.csv
+ *   302s to arcep.s3.rbx.io.cloud.ovh.net/.../2026_T1/... — `last` tracks the
+ *   current quarter, so the URL does not need pinning. fetch() follows it; a
+ *   curl without -L gets a 333-byte HTML redirect page, which is worth knowing
+ *   before concluding the source is dead.
+ *
+ *   Columns are nested eligibility COUNTS of premises, not speeds:
+ *     nbr, inel_hd, elig_hd05, elig_hd3, elig_bhd8, elig_thd30,
+ *     elig_thd100, elig_thd1g
+ *
+ * WHY THIS MOVED FROM elig_thd100 TO elig_thd1g. The runner used to report
+ * `elig_thd100 / nbr` — the share reaching 100 Mbit/s. That measure is finished:
+ * measured on the 2026_T1 file, **34,780 of 34,870 communes (99.7%) sit at
+ * exactly 100%**. Every commune in France scored the same, `percentileBounds`
+ * saw p2 === p98, and scoreFromBounds returned its degenerate 50 for all of
+ * them — a criterion that painted the whole map one flat shade and looked like
+ * it was working. The frontier has moved to gigabit, and `elig_thd1g` still
+ * discriminates: 320 distinct values across the Loire's 320 communes.
+ *
+ * WHY NOT A SPEED IN Mbit/s, which is what the criterion's seeded unit asked
+ * for. The tiers are nested, so the "speed available to the median premise" is
+ * derivable — but it saturates for the same reason: with gigabit eligibility
+ * median 98.7% in the Loire, virtually every commune's median premise already
+ * reaches 1 Gbit/s. There is no median-throughput figure in this source that
+ * still separates communes. Migration 20260907090000 relabels the criterion to
+ * match what is actually measured rather than leaving a percentage wearing the
+ * unit "Mbps".
+ */
 async function ingestInternetSpeed(log: LogFn): Promise<IngestionResult> {
   const CRITERION_ID = 'internetSpeed';
   const SOURCE = 'ARCEP - Ma Connexion Internet';
@@ -1889,27 +1921,37 @@ async function ingestInternetSpeed(log: LogFn): Promise<IngestionResult> {
   const headers = lines[0].split(';');
   const codeIdx = headers.indexOf('code_insee');
   const nbrIdx = headers.indexOf('nbr');
+  const gigabitIdx = headers.indexOf('elig_thd1g');
   const thd100Idx = headers.indexOf('elig_thd100');
   const typeIdx = headers.indexOf('type');
 
-  if (codeIdx === -1 || nbrIdx === -1 || thd100Idx === -1) {
+  if (codeIdx === -1 || nbrIdx === -1 || gigabitIdx === -1) {
     throw new Error('Required columns not found in CSV');
   }
 
   const speeds = new Map<string, number>();
+  let saturated100 = 0;
   for (let i = 1; i < lines.length; i++) {
     const vals = lines[i].split(';');
+    // The file also carries per-technology rows; 'all' is the commune total.
     if (typeIdx !== -1 && vals[typeIdx] !== 'all') continue;
 
     const code = vals[codeIdx];
     const nbr = parseInt(vals[nbrIdx], 10);
-    const thd100 = parseInt(vals[thd100Idx], 10);
+    const gigabit = parseInt(vals[gigabitIdx], 10);
 
-    if (code && !isNaN(nbr) && nbr > 0 && !isNaN(thd100)) {
-      speeds.set(code, Math.round(((thd100 / nbr) * 100) * 10) / 10);
+    if (code && !isNaN(nbr) && nbr > 0 && !isNaN(gigabit)) {
+      speeds.set(code, Math.round(((gigabit / nbr) * 100) * 10) / 10);
+      if (thd100Idx !== -1 && parseInt(vals[thd100Idx], 10) >= nbr) saturated100++;
     }
   }
   log(`  Parsed ${speeds.size} communes`);
+  // Logged every run so the day gigabit saturates too — the way 100 Mbit/s
+  // already has — shows up as a number rather than as a flat map.
+  log(
+    `  (${saturated100}/${speeds.size} communes are at 100% for 100 Mbit/s — ` +
+      `that tier no longer discriminates, hence gigabit)`
+  );
 
   log('Step 3: Filtering to valid communes...');
   const filtered = new Map<string, number>();

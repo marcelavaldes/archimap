@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-09-07T08:24:53.382Z",
+  "generatedAt": "2026-09-07T09:00:32.843Z",
   "region": {
     "departements": [
       "42"
@@ -14,50 +14,65 @@
   "communeCount": 320,
   "criteriaShipped": [
     "temperature",
-    "rainfall",
-    "publicTransport",
-    "employmentRate"
-  ],
-  "criteriaOmitted": [
     "sunshine",
+    "rainfall",
     "propertyPrice",
     "localTax",
-    "hospitalAccess",
+    "publicTransport",
     "internetSpeed",
     "crimeRate",
     "culturalVenues",
+    "employmentRate",
     "medianIncome"
+  ],
+  "criteriaOmitted": [
+    "hospitalAccess"
   ],
   "provenance": {
     "temperature": {
       "status": "real",
-      "source": "Météo France (SYNOP)",
+      "source": "Météo France — réanalyse SAFRAN/SIM2, maille 8 km (2025)",
       "sourceDate": "2026-09-07",
       "communes": 320,
-      "distinctScores": 3,
+      "distinctScores": 37,
       "coverage": 1,
-      "scoredAgainst": 34969
+      "scoredAgainst": 34746
     },
     "sunshine": {
-      "status": "no-data",
-      "reason": "capture missing, empty, or degenerate"
+      "status": "real",
+      "source": "Météo France — données climatologiques mensuelles, 189 postes héliographiques (2025)",
+      "sourceDate": "2026-09-07",
+      "communes": 320,
+      "distinctScores": 5,
+      "coverage": 1,
+      "scoredAgainst": 34927
     },
     "rainfall": {
       "status": "real",
-      "source": "Météo France (SYNOP)",
+      "source": "Météo France — réanalyse SAFRAN/SIM2, maille 8 km (2025)",
       "sourceDate": "2026-09-07",
       "communes": 320,
-      "distinctScores": 3,
+      "distinctScores": 35,
       "coverage": 1,
-      "scoredAgainst": 34969
+      "scoredAgainst": 34746
     },
     "propertyPrice": {
-      "status": "no-data",
-      "reason": "capture missing, empty, or degenerate"
+      "status": "real",
+      "source": "DVF - data.gouv.fr (geo-dvf bulk export)",
+      "sourceDate": "2026-09-07",
+      "communes": 307,
+      "distinctScores": 64,
+      "coverage": 0.959,
+      "scoredAgainst": 28737
     },
     "localTax": {
-      "status": "no-data",
-      "reason": "capture missing, empty, or degenerate"
+      "status": "real",
+      "source": "DGFiP - Fiscalité Locale",
+      "sourceDate": "2026-09-07",
+      "communes": 320,
+      "distinctScores": 58,
+      "coverage": 1,
+      "scoredAgainst": 34874
     },
     "hospitalAccess": {
       "status": "no-data",
@@ -73,16 +88,31 @@
       "scoredAgainst": 34969
     },
     "internetSpeed": {
-      "status": "no-data",
-      "reason": "capture missing, empty, or degenerate"
+      "status": "real",
+      "source": "ARCEP - Ma Connexion Internet",
+      "sourceDate": "2026-09-07",
+      "communes": 320,
+      "distinctScores": 12,
+      "coverage": 1,
+      "scoredAgainst": 34870
     },
     "crimeRate": {
-      "status": "no-data",
-      "reason": "capture missing, empty, or degenerate"
+      "status": "real",
+      "source": "SSMSI - Ministère de l'Intérieur",
+      "sourceDate": "2026-09-07",
+      "communes": 320,
+      "distinctScores": 77,
+      "coverage": 1,
+      "scoredAgainst": 34875
     },
     "culturalVenues": {
-      "status": "no-data",
-      "reason": "capture missing, empty, or degenerate"
+      "status": "real",
+      "source": "Ministère de la Culture - Basilic",
+      "sourceDate": "2026-09-07",
+      "communes": 320,
+      "distinctScores": 47,
+      "coverage": 1,
+      "scoredAgainst": 34957
     },
     "employmentRate": {
       "status": "real",
@@ -94,8 +124,13 @@
       "scoredAgainst": 34840
     },
     "medianIncome": {
-      "status": "no-data",
-      "reason": "capture missing, empty, or degenerate"
+      "status": "real",
+      "source": "INSEE - Filosofi",
+      "sourceDate": "2026-09-07",
+      "communes": 313,
+      "distinctScores": 74,
+      "coverage": 0.978,
+      "scoredAgainst": 30794
     }
   },
   "note": "Real open data. Scores are national percentiles; rows filtered to the demo région."
