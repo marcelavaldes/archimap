@@ -135,41 +135,165 @@ function haversine(lat1: number, lon1: number, lat2: number, lon2: number): numb
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
-interface Station {
+/** One point a commune can take a climate value from: a station, or a grid cell. */
+interface SourcePoint {
   id: string;
   lat: number;
   lon: number;
   value: number;
 }
 
-/** Map each commune to the value of its nearest station */
-function mapToNearestStation(
+/** What a nearest-source mapping actually resolved to. */
+interface NearestMapping {
+  values: Map<string, number>;
+  /**
+   * How many distinct source points actually supplied a value. This — not the
+   * number of communes written — is the criterion's real spatial resolution.
+   */
+  distinctSources: number;
+  /** Communes left without a value because nothing was within maxDistanceKm. */
+  unmapped: number;
+  medianDistanceKm: number;
+  p95DistanceKm: number;
+}
+
+/**
+ * Map each commune centroid to the value of the nearest source point.
+ *
+ * Two things changed from the brute-force version this replaces.
+ *
+ * It is bucketed rather than O(communes × sources). The old loop was written
+ * for the 60 SYNOP stations, where 2.1 million haversine calls costs nothing;
+ * the SAFRAN grid has 9,892 cells, which would have made it 345 million. Source
+ * points are indexed into square lat/lon buckets and the search expands ring by
+ * ring out of the commune's own bucket. Correctness rests on one bound: a point
+ * outside the rings already searched has to cross that many whole buckets to
+ * reach us, so it is at least `(ring - 1) × kmPerRing` away. kmPerRing is
+ * computed at the highest absolute latitude present in the data, where a degree
+ * of longitude is shortest, so the bound can only ever under-promise. Expansion
+ * stops once the best candidate found is nearer than the bound, which makes the
+ * result identical to the exhaustive scan, not an approximation of it.
+ *
+ * And it takes a maximum distance. Nearest-anything has no natural floor for
+ * quality: uncapped, a Guadeloupe commune silently inherits the climate of
+ * whichever metropolitan grid cell happens to be least far away, 6,000 km off.
+ * Past maxDistanceKm the commune gets no value at all — the honest outcome —
+ * and the count comes back in `unmapped` rather than disappearing.
+ */
+function mapToNearestSource(
   communes: CommunePoint[],
-  stations: Station[],
-  validCodes: Set<string>
-): Map<string, number> {
+  sources: SourcePoint[],
+  validCodes: Set<string>,
+  maxDistanceKm: number
+): NearestMapping {
   const values = new Map<string, number>();
+  const used = new Set<string>();
+  const distances: number[] = [];
+  let unmapped = 0;
+
+  if (sources.length === 0) {
+    return { values, distinctSources: 0, unmapped: communes.length, medianDistanceKm: 0, p95DistanceKm: 0 };
+  }
+
+  // Aim for ~2 sources per bucket over the ~300 deg² that France spans, so the
+  // index adapts to a 228-station set and a 9,892-cell grid alike.
+  const bucketDeg = Math.min(2, Math.max(0.1, Math.sqrt(600 / sources.length)));
+
+  let maxAbsLat = 0;
+  for (const s of sources) maxAbsLat = Math.max(maxAbsLat, Math.abs(s.lat));
+  for (const c of communes) maxAbsLat = Math.max(maxAbsLat, Math.abs(c.lat));
+  // The least a bucket can be worth in km — a degree of longitude at the
+  // highest latitude in play. Used as the per-ring clearance guarantee.
+  const kmPerRing = Math.max(
+    1,
+    bucketDeg * 111.32 * Math.cos((Math.min(maxAbsLat, 85) * Math.PI) / 180)
+  );
+  const maxRing = Math.ceil(maxDistanceKm / kmPerRing) + 1;
+
+  const bucketKey = (bx: number, by: number) => `${bx}:${by}`;
+  const index = new Map<string, SourcePoint[]>();
+  for (const s of sources) {
+    const k = bucketKey(Math.floor(s.lon / bucketDeg), Math.floor(s.lat / bucketDeg));
+    const bucket = index.get(k);
+    if (bucket) bucket.push(s);
+    else index.set(k, [s]);
+  }
 
   for (const commune of communes) {
     if (!validCodes.has(commune.code)) continue;
 
-    let minDist = Infinity;
-    let nearestValue = 0;
+    const cx = Math.floor(commune.lon / bucketDeg);
+    const cy = Math.floor(commune.lat / bucketDeg);
 
-    for (const station of stations) {
-      const dist = haversine(commune.lat, commune.lon, station.lat, station.lon);
-      if (dist < minDist) {
-        minDist = dist;
-        nearestValue = station.value;
+    let best: SourcePoint | null = null;
+    let bestDist = Infinity;
+
+    for (let ring = 0; ring <= maxRing; ring++) {
+      // Everything still unsearched is at least this far away.
+      if (best && bestDist <= (ring - 1) * kmPerRing) break;
+
+      for (let dx = -ring; dx <= ring; dx++) {
+        for (let dy = -ring; dy <= ring; dy++) {
+          // Only the shell of the square — the interior was covered by earlier rings.
+          if (ring > 0 && Math.abs(dx) !== ring && Math.abs(dy) !== ring) continue;
+          const bucket = index.get(bucketKey(cx + dx, cy + dy));
+          if (!bucket) continue;
+          for (const s of bucket) {
+            const d = haversine(commune.lat, commune.lon, s.lat, s.lon);
+            if (d < bestDist) {
+              bestDist = d;
+              best = s;
+            }
+          }
+        }
       }
     }
 
-    if (minDist < Infinity) {
-      values.set(commune.code, nearestValue);
+    if (!best || bestDist > maxDistanceKm) {
+      unmapped++;
+      continue;
     }
+
+    values.set(commune.code, best.value);
+    used.add(best.id);
+    distances.push(bestDist);
   }
 
-  return values;
+  distances.sort((a, b) => a - b);
+  const quantile = (q: number) =>
+    distances.length ? distances[Math.min(distances.length - 1, Math.floor(distances.length * q))] : 0;
+
+  return {
+    values,
+    distinctSources: used.size,
+    unmapped,
+    medianDistanceKm: Math.round(quantile(0.5) * 10) / 10,
+    p95DistanceKm: Math.round(quantile(0.95) * 10) / 10,
+  };
+}
+
+/**
+ * Log what a climate criterion's spatial resolution actually is.
+ *
+ * A criterion that writes 34,900 rows looks fully resolved whatever it was
+ * built from. The number that matters is how many distinct source points those
+ * rows came from: under the old SYNOP mapping that was 60 for the whole
+ * country, which is why the Loire's 320 communes shared three values and the
+ * map drew three flat blobs while every count on the admin page looked healthy.
+ * Printing it — with the distance communes actually sit from their source —
+ * puts the real figure in front of whoever runs the ingest instead of leaving
+ * it to be discovered from the shape of the map.
+ */
+function logResolution(log: LogFn, mapping: NearestMapping): void {
+  log(
+    `  Mapped ${mapping.values.size} communes onto ${mapping.distinctSources} distinct source points`
+  );
+  log(
+    `  Commune-to-source distance: median ${mapping.medianDistanceKm} km, p95 ${mapping.p95DistanceKm} km`
+  );
+  if (mapping.unmapped > 0) {
+    log(`  ${mapping.unmapped} communes left unmapped (nothing within range)`);
+  }
 }
 
 function buildRecords(
@@ -272,198 +396,459 @@ async function downloadZipCSV(url: string, csvPattern?: RegExp): Promise<string>
 }
 
 // ═══════════════════════════════════════════════════════════════
-//  CLIMATE RUNNERS (nearest-station mapping)
+//  CLIMATE RUNNERS
 // ═══════════════════════════════════════════════════════════════
+
+/*
+ * All three climate criteria used to come off the SYNOP dataset: 60 stations
+ * for the whole of France, each one spread over its nearest communes. Across
+ * the Loire's 320 communes that produced three distinct values. The numbers
+ * were plausible and the map was a lie — neighbouring communes matched because
+ * they shared a station 80 km away, and nothing in the pipeline said so.
+ *
+ * Temperature and rainfall now come off SAFRAN/SIM2, Météo France's operational
+ * 8 km reanalysis: 9,892 cells over metropolitan France, ~165× the sampling,
+ * and altitude is handled by the analysis rather than ignored — which is what
+ * the Pilat and the Forez need. The interpolation is Météo France's own, from
+ * far more input than we have; ours is only the last 8 km hop from cell to
+ * commune centroid.
+ *
+ * Sunshine gets no such upgrade, and the comment on ingestSunshine says why.
+ */
+
+const METEOFRANCE_BUCKET = 'https://object.files.data.gouv.fr/meteofrance';
+
+/**
+ * List the keys under a prefix of Météo France's public data.gouv.fr bucket.
+ *
+ * Météo France names these archives after a ROLLING window. ingestSunshine used
+ * to hardcode `Q_${dept}_latest-2024-2025_autres-parametres.csv.gz`; the window
+ * has since rolled to `latest-2025-2026`, so all 96 département downloads
+ * returned 404, each one was swallowed by a bare `catch {}`, and the criterion
+ * reported success having produced zero stations and zero communes. The bucket
+ * is publicly listable, so ask it what the current window is called instead of
+ * guessing — the next roll then costs nothing.
+ */
+async function listBucketKeys(prefix: string): Promise<string[]> {
+  const keys: string[] = [];
+  let marker = '';
+
+  for (let page = 0; page < 50; page++) {
+    const url =
+      `${METEOFRANCE_BUCKET}?prefix=${encodeURIComponent(prefix)}&max-keys=1000` +
+      (marker ? `&marker=${encodeURIComponent(marker)}` : '');
+    const xml = await (await fetchWithRetry(url)).text();
+    const pageKeys = Array.from(xml.matchAll(/<Key>([^<]+)<\/Key>/g), (m) => m[1]);
+    keys.push(...pageKeys);
+    if (pageKeys.length === 0 || !/<IsTruncated>\s*true\s*<\/IsTruncated>/i.test(xml)) break;
+    marker = pageKeys[pageKeys.length - 1];
+  }
+
+  return keys;
+}
+
+/** One SAFRAN grid cell, annualised. */
+interface SafranCell {
+  key: string;
+  lat: number;
+  lon: number;
+  meanTempC: number;
+  totalRainMm: number;
+}
+
+interface SafranAnnual {
+  year: number;
+  cells: SafranCell[];
+}
+
+/**
+ * SAFRAN cells are within ~5.7 km of any point inside the covered domain, so
+ * 20 km is slack for coastal and island centroids without being enough to let
+ * an overseas commune reach the mainland. SAFRAN is metropolitan-only; DOM
+ * communes are meant to fall out here rather than be handed Brittany's weather.
+ */
+const SAFRAN_MAX_KM = 20;
+
+/**
+ * Temperature and rainfall come out of the same 25 MB file and the admin page
+ * can run them back to back, so parse it once per process. The cached value is
+ * the ~9,900-cell annual aggregate, not the 86 MB of text it came from.
+ */
+let safranAnnualCache: Promise<SafranAnnual> | null = null;
+
+function getSafranAnnual(log: LogFn): Promise<SafranAnnual> {
+  if (!safranAnnualCache) safranAnnualCache = loadSafranAnnual(log);
+  return safranAnnualCache;
+}
+
+async function loadSafranAnnual(log: LogFn): Promise<SafranAnnual> {
+  const keys = await listBucketKeys('data/synchro_ftp/REF_CC/SIM_MENS/');
+  const archive = keys.find((k) => /MENS_SIM2_latest-[\d-]+\.csv\.gz$/.test(k));
+  if (!archive) {
+    throw new Error(
+      `No MENS_SIM2_latest-*.csv.gz under data/synchro_ftp/REF_CC/SIM_MENS/ (saw ${keys.length} keys)`
+    );
+  }
+  log(`  Archive: ${archive.split('/').pop()}`);
+
+  // The grid is defined in Lambert II étendu, but Météo France ships the
+  // WGS84 equivalent of every node alongside it. Reading their table beats
+  // reimplementing the projection and getting the datum shift subtly wrong.
+  const coordCsv = await (
+    await fetchWithRetry(
+      `${METEOFRANCE_BUCKET}/data/synchro_ftp/REF_CC/SIM/coordonnees_grille_safran_lambert-2-etendu.csv`
+    )
+  ).text();
+
+  const coords = new Map<string, { lat: number; lon: number }>();
+  const coordLines = coordCsv.trim().split('\n');
+  for (let i = 1; i < coordLines.length; i++) {
+    const c = coordLines[i].split(';');
+    if (c.length < 4) continue;
+    // LAMBX (hm);LAMBY (hm);LAT_DG;LON_DG — decimal comma, French style.
+    const lat = parseFloat(c[2].replace(',', '.'));
+    const lon = parseFloat(c[3].replace(',', '.'));
+    if (Number.isFinite(lat) && Number.isFinite(lon)) {
+      coords.set(`${c[0].trim()},${c[1].trim()}`, { lat, lon });
+    }
+  }
+  if (coords.size === 0) throw new Error('SAFRAN grid coordinate table is empty');
+  log(`  ${coords.size} SAFRAN grid cells (8 km mesh, metropolitan France)`);
+
+  const text = await downloadGzipped(`${METEOFRANCE_BUCKET}/${archive}`);
+
+  const headerEnd = text.indexOf('\n');
+  const header = text.slice(0, headerEnd).trim().split(';');
+  const iX = header.indexOf('LAMBX');
+  const iY = header.indexOf('LAMBY');
+  const iDate = header.indexOf('DATE');
+  const iTemp = header.indexOf('T');
+  const iRain = header.indexOf('PRETOTM');
+  if (iX < 0 || iY < 0 || iDate < 0 || iTemp < 0 || iRain < 0) {
+    throw new Error(`Unexpected SIM2 monthly columns: ${header.slice(0, 8).join(';')}`);
+  }
+
+  interface Accumulator {
+    tempSum: number;
+    tempMonths: number;
+    rainSum: number;
+    rainMonths: number;
+  }
+  const byYear = new Map<number, Map<string, Accumulator>>();
+
+  // Walked by index rather than split('\n'): the archive is ~86 MB and 760,000
+  // lines decompressed, and materialising every line at once is pure waste when
+  // only one year of them survives the filter.
+  for (let pos = headerEnd + 1; pos < text.length; ) {
+    let end = text.indexOf('\n', pos);
+    if (end === -1) end = text.length;
+    const line = text.slice(pos, end);
+    pos = end + 1;
+    if (!line) continue;
+
+    const c = line.split(';');
+    const yyyymm = c[iDate];
+    if (!yyyymm || yyyymm.length < 6) continue;
+    const year = Number(yyyymm.slice(0, 4));
+    if (!Number.isFinite(year)) continue;
+
+    let cells = byYear.get(year);
+    if (!cells) byYear.set(year, (cells = new Map()));
+    const cellKey = `${c[iX]},${c[iY]}`;
+    let acc = cells.get(cellKey);
+    if (!acc) cells.set(cellKey, (acc = { tempSum: 0, tempMonths: 0, rainSum: 0, rainMonths: 0 }));
+
+    const temp = parseFloat(c[iTemp]);
+    const rain = parseFloat(c[iRain]);
+    if (Number.isFinite(temp)) {
+      acc.tempSum += temp;
+      acc.tempMonths++;
+    }
+    if (Number.isFinite(rain)) {
+      acc.rainSum += rain;
+      acc.rainMonths++;
+    }
+  }
+
+  // The most recent calendar year the archive covers in full. Deriving it from
+  // the data rather than from `new Date()` is what stops this breaking every
+  // January, and it waits rather than half-counting when a month is published
+  // late — a partial year would understate rainfall for the whole country.
+  for (const year of [...byYear.keys()].sort((a, b) => b - a)) {
+    const complete = [...byYear.get(year)!.entries()].filter(
+      ([, a]) => a.tempMonths === 12 && a.rainMonths === 12
+    );
+    if (complete.length < coords.size * 0.9) continue;
+
+    const cells: SafranCell[] = [];
+    for (const [key, acc] of complete) {
+      const at = coords.get(key);
+      if (!at) continue;
+      cells.push({
+        key,
+        lat: at.lat,
+        lon: at.lon,
+        meanTempC: Math.round((acc.tempSum / 12) * 10) / 10,
+        totalRainMm: Math.round(acc.rainSum),
+      });
+    }
+    if (cells.length === 0) continue;
+
+    log(`  ${cells.length} cells with a complete ${year}`);
+    return { year, cells };
+  }
+
+  throw new Error('No complete calendar year in the SIM2 monthly archive');
+}
 
 // --- Temperature ---
 
 async function ingestTemperature(log: LogFn): Promise<IngestionResult> {
   const CRITERION_ID = 'temperature';
-  const SOURCE = 'Météo France (SYNOP)';
   const HIGHER_IS_BETTER = true; // warmer is "better" for livability
 
   log('Step 1: Fetching commune codes...');
   const validCodes = await getCommuneCodes();
   log(`  ${validCodes.size} communes in database`);
 
-  log('Step 2: Fetching temperature data from SYNOP API...');
-  const year = new Date().getFullYear() - 1;
-  const url = `https://public.opendatasoft.com/api/explore/v2.1/catalog/datasets/donnees-synop-essentielles-omm/records?select=avg(tc) as avg_temp,numer_sta,nom,codegeo,latitude,longitude&group_by=numer_sta,nom,codegeo,latitude,longitude&where=date>="${year}-01-01" AND date<="${year}-12-31" AND tc is not null&limit=100`;
+  log('Step 2: Loading the SAFRAN/SIM2 8 km reanalysis...');
+  const safran = await getSafranAnnual(log);
+  const source = `Météo France — réanalyse SAFRAN/SIM2, maille 8 km (${safran.year})`;
+  // Mean of the twelve monthly means, which is the annual mean the criterion
+  // claims to hold ("Température moyenne annuelle en degrés Celsius").
+  const cells: SourcePoint[] = safran.cells.map((c) => ({
+    id: c.key,
+    lat: c.lat,
+    lon: c.lon,
+    value: c.meanTempC,
+  }));
+  log(`  ${cells.length} cells with a mean ${safran.year} temperature`);
 
-  const res = await fetchWithRetry(url);
-  const data = await res.json();
-  const stations: Station[] = [];
-
-  for (const r of data.results || []) {
-    if (r.avg_temp != null && r.latitude && r.longitude) {
-      stations.push({
-        id: r.numer_sta,
-        lat: r.latitude,
-        lon: r.longitude,
-        value: Math.round(r.avg_temp * 10) / 10,
-      });
-    }
-  }
-  log(`  Got ${stations.length} stations with temperature data for ${year}`);
-
-  log('Step 3: Mapping communes to nearest station...');
+  log('Step 3: Mapping communes to their SAFRAN cell...');
   const centroids = await getCommuneCentroids(log);
-  const values = mapToNearestStation(centroids, stations, validCodes);
-  log(`  Mapped ${values.size} communes`);
+  const mapping = mapToNearestSource(centroids, cells, validCodes, SAFRAN_MAX_KM);
+  logResolution(log, mapping);
 
   log('Step 4: Calculating scores and ranks...');
-  const records = buildRecords(values, CRITERION_ID, SOURCE, HIGHER_IS_BETTER, log);
+  const records = buildRecords(mapping.values, CRITERION_ID, source, HIGHER_IS_BETTER, log);
 
   log('Step 5: Upserting to database...');
   const result = await upsertCriterionValues(records);
   log(`  Inserted: ${result.inserted}, Errors: ${result.errors}`);
 
-  return { inserted: result.inserted, errors: result.errors, communes: values.size };
+  return { inserted: result.inserted, errors: result.errors, communes: mapping.values.size };
 }
 
 // --- Rainfall ---
 
 async function ingestRainfall(log: LogFn): Promise<IngestionResult> {
   const CRITERION_ID = 'rainfall';
-  const SOURCE = 'Météo France (SYNOP)';
   const HIGHER_IS_BETTER = false; // less rain is "better" for livability
 
   log('Step 1: Fetching commune codes...');
   const validCodes = await getCommuneCodes();
   log(`  ${validCodes.size} communes in database`);
 
-  log('Step 2: Fetching precipitation data from SYNOP API...');
-  const year = new Date().getFullYear() - 1;
-  // rr3 = precipitation last 3 hours. Sum over the year for annual total.
-  const url = `https://public.opendatasoft.com/api/explore/v2.1/catalog/datasets/donnees-synop-essentielles-omm/records?select=sum(rr3) as total_precip,numer_sta,nom,codegeo,latitude,longitude&group_by=numer_sta,nom,codegeo,latitude,longitude&where=date>="${year}-01-01" AND date<="${year}-12-31" AND rr3 is not null AND rr3>=0&limit=100`;
+  log('Step 2: Loading the SAFRAN/SIM2 8 km reanalysis...');
+  const safran = await getSafranAnnual(log);
+  const source = `Météo France — réanalyse SAFRAN/SIM2, maille 8 km (${safran.year})`;
+  // PRETOTM is the month's total precipitation in mm, rain and snow-water
+  // together, so the twelve sum straight to the annual total.
+  const cells: SourcePoint[] = safran.cells.map((c) => ({
+    id: c.key,
+    lat: c.lat,
+    lon: c.lon,
+    value: c.totalRainMm,
+  }));
+  log(`  ${cells.length} cells with a complete ${safran.year} precipitation total`);
 
-  const res = await fetchWithRetry(url);
-  const data = await res.json();
-  const stations: Station[] = [];
-
-  for (const r of data.results || []) {
-    if (r.total_precip != null && r.latitude && r.longitude) {
-      stations.push({
-        id: r.numer_sta,
-        lat: r.latitude,
-        lon: r.longitude,
-        value: Math.round(r.total_precip),
-      });
-    }
-  }
-  log(`  Got ${stations.length} stations with precipitation data for ${year}`);
-
-  log('Step 3: Mapping communes to nearest station...');
+  log('Step 3: Mapping communes to their SAFRAN cell...');
   const centroids = await getCommuneCentroids(log);
-  const values = mapToNearestStation(centroids, stations, validCodes);
-  log(`  Mapped ${values.size} communes`);
+  const mapping = mapToNearestSource(centroids, cells, validCodes, SAFRAN_MAX_KM);
+  logResolution(log, mapping);
 
   log('Step 4: Calculating scores and ranks...');
-  const records = buildRecords(values, CRITERION_ID, SOURCE, HIGHER_IS_BETTER, log);
+  const records = buildRecords(mapping.values, CRITERION_ID, source, HIGHER_IS_BETTER, log);
 
   log('Step 5: Upserting to database...');
   const result = await upsertCriterionValues(records);
   log(`  Inserted: ${result.inserted}, Errors: ${result.errors}`);
 
-  return { inserted: result.inserted, errors: result.errors, communes: values.size };
+  return { inserted: result.inserted, errors: result.errors, communes: mapping.values.size };
 }
 
 // --- Sunshine ---
 
+/**
+ * How far a commune may sit from the heliograph it borrows its value from.
+ *
+ * Deliberately generous, because with ~190 usable stations for the whole
+ * country there is no tighter number that keeps rural France covered — the
+ * empty quarters of the Massif Central and the southern Alps genuinely have no
+ * nearer instrument. It exists to stop the absurd cases (an overseas commune
+ * reaching a mainland station), not to pretend the rest are close.
+ */
+const SUNSHINE_MAX_KM = 150;
+
+/**
+ * Sunshine is the one climate criterion with no gridded source, and it stays
+ * visibly coarser than the other two. That is the data, not a bug.
+ *
+ * SAFRAN carries shortwave radiation (SSI), not sunshine duration. Converting
+ * one to the other needs locally-fitted Ångström–Prescott coefficients, which
+ * would be a model output wearing a measurement's units — exactly the invented
+ * precision the rest of this pipeline refuses to ship. So sunshine comes off
+ * real heliographs, and heliographs are expensive: of the ~2,300 stations
+ * filing monthly climatological records, only ~230 measure insolation at all
+ * and ~190 have a complete year of it. The Loire has exactly one. Communes here
+ * are typically tens of kilometres from their source, not the ~4 km of the
+ * SAFRAN runners, and logResolution() prints the real figure on every run so
+ * the number is never inferred from the map.
+ *
+ * The two things this must not do, both of which the previous version did:
+ *
+ *  - Guess the archive's filename. It hardcoded a rolling window that had since
+ *    rolled, so all 96 downloads 404'd and the criterion produced nothing while
+ *    reporting success. Names come from the bucket listing now, and enough
+ *    failures raise instead of being swallowed.
+ *  - Extrapolate a year from a handful of days. It scaled any station with ≥30
+ *    days by 365/n, so a station reporting only June came out near 3,000 h/yr
+ *    and one reporting only December near 700 — pure seasonal artefact dressed
+ *    as climate. Only stations with twelve complete months count.
+ */
 async function ingestSunshine(log: LogFn): Promise<IngestionResult> {
   const CRITERION_ID = 'sunshine';
-  const SOURCE = 'Météo France - Données climatologiques';
   const HIGHER_IS_BETTER = true;
 
   log('Step 1: Fetching commune codes...');
   const validCodes = await getCommuneCodes();
   log(`  ${validCodes.size} communes in database`);
 
-  log('Step 2: Downloading sunshine data from Météo France...');
-  log('  Downloading département files (INST field = sunshine minutes/day)...');
+  log('Step 2: Locating the current MENSQ monthly archives...');
+  // MENS is the main network, MENS_COMP the complementary stations. Both are
+  // read: the département list is whatever the bucket holds, which is also how
+  // Corsica gets picked up — it files as `20`, not the `2A`/`2B` the old
+  // hardcoded list asked for and never received.
+  const keys = [
+    ...(await listBucketKeys('data/synchro_ftp/BASE/MENS/')),
+    ...(await listBucketKeys('data/synchro_ftp/BASE/MENS_COMP/')),
+  ].filter((k) => /\/MENSQ(-COMP)?_[^/]+_latest-[\d-]+\.csv\.gz$/.test(k));
 
-  // Metropolitan départements: 01-19, 2A, 2B, 21-95
-  const depts: string[] = [];
-  for (let i = 1; i <= 19; i++) depts.push(i.toString().padStart(2, '0'));
-  depts.push('2A', '2B');
-  for (let i = 21; i <= 95; i++) depts.push(i.toString().padStart(2, '0'));
+  if (keys.length === 0) {
+    throw new Error('No MENSQ_*_latest-*.csv.gz found — the Météo France archive layout has changed');
+  }
+  log(`  ${keys.length} département archives to read`);
 
-  const stations: Station[] = [];
-  const stationSunshine = new Map<string, { totalMinutes: number; days: number; lat: number; lon: number }>();
-
-  let downloaded = 0;
+  interface StationYear {
+    minutes: number;
+    months: number;
+    lat: number;
+    lon: number;
+  }
+  const byYear = new Map<number, Map<string, StationYear>>();
   let failed = 0;
 
-  // Download in batches of 10
-  for (let i = 0; i < depts.length; i += 10) {
-    const batch = depts.slice(i, i + 10);
-    const promises = batch.map(async (dept) => {
-      try {
-        const url = `https://object.files.data.gouv.fr/meteofrance/data/synchro_ftp/BASE/QUOT/Q_${dept}_latest-2024-2025_autres-parametres.csv.gz`;
-        const text = await downloadGzipped(url);
-        const lines = text.trim().split('\n');
+  for (let i = 0; i < keys.length; i += 12) {
+    await Promise.all(
+      keys.slice(i, i + 12).map(async (key) => {
+        try {
+          const text = await downloadGzipped(`${METEOFRANCE_BUCKET}/${key}`);
+          const lines = text.trim().split('\n');
+          if (lines.length < 2) return;
 
-        if (lines.length < 2) return;
+          const headers = lines[0].split(';');
+          const iPoste = headers.indexOf('NUM_POSTE');
+          const iMonth = headers.indexOf('AAAAMM');
+          const iInst = headers.indexOf('INST');
+          const iDays = headers.indexOf('NBINST');
+          const iLat = headers.indexOf('LAT');
+          const iLon = headers.indexOf('LON');
+          // Most complementary stations are rain gauges with no INST column at
+          // all. Nothing to take from them here; the file is simply skipped.
+          if (iPoste < 0 || iMonth < 0 || iInst < 0 || iLat < 0 || iLon < 0) return;
 
-        const headers = lines[0].split(';');
-        const numPosteIdx = headers.indexOf('NUM_POSTE');
-        const instIdx = headers.indexOf('INST');
-        const latIdx = headers.indexOf('LAT');
-        const lonIdx = headers.indexOf('LON');
+          for (let j = 1; j < lines.length; j++) {
+            const cols = lines[j].split(';');
+            const minutes = parseFloat(cols[iInst]);
+            const lat = parseFloat(cols[iLat]);
+            const lon = parseFloat(cols[iLon]);
+            if (!Number.isFinite(minutes) || !Number.isFinite(lat) || !Number.isFinite(lon)) continue;
 
-        if (numPosteIdx === -1 || instIdx === -1) return;
+            // NBINST is how many days of the month the heliograph actually
+            // reported. A month measured on four days would drag the annual
+            // total down as though the sun had not shone on the other 27.
+            if (iDays >= 0) {
+              const days = parseFloat(cols[iDays]);
+              if (!Number.isFinite(days) || days < 25) continue;
+            }
 
-        for (let j = 1; j < lines.length; j++) {
-          const cols = lines[j].split(';');
-          const poste = cols[numPosteIdx];
-          const inst = parseFloat(cols[instIdx]);
-          const lat = latIdx >= 0 ? parseFloat(cols[latIdx]) : NaN;
-          const lon = lonIdx >= 0 ? parseFloat(cols[lonIdx]) : NaN;
+            const yyyymm = cols[iMonth];
+            if (!yyyymm || yyyymm.length < 6) continue;
+            const year = Number(yyyymm.slice(0, 4));
+            if (!Number.isFinite(year)) continue;
 
-          if (poste && !isNaN(inst) && inst >= 0) {
-            const existing = stationSunshine.get(poste);
-            if (existing) {
-              existing.totalMinutes += inst;
-              existing.days++;
-            } else if (!isNaN(lat) && !isNaN(lon)) {
-              stationSunshine.set(poste, { totalMinutes: inst, days: 1, lat, lon });
+            let stations = byYear.get(year);
+            if (!stations) byYear.set(year, (stations = new Map()));
+            const poste = cols[iPoste];
+            const acc = stations.get(poste);
+            if (acc) {
+              acc.minutes += minutes;
+              acc.months++;
+            } else {
+              stations.set(poste, { minutes, months: 1, lat, lon });
             }
           }
+        } catch {
+          failed++;
         }
-
-        downloaded++;
-      } catch {
-        failed++;
-      }
-    });
-
-    await Promise.all(promises);
-    log(`  Downloaded ${downloaded + failed}/${depts.length} départements (${failed} failed)`);
+      })
+    );
   }
 
-  // Calculate annual sunshine hours per station
-  for (const [id, data] of stationSunshine) {
-    if (data.days >= 30) { // need at least 30 days of data
-      // Extrapolate to full year: (totalMinutes / days) * 365 / 60 = hours/year
-      const hoursPerYear = Math.round((data.totalMinutes / data.days) * 365 / 60);
-      stations.push({ id, lat: data.lat, lon: data.lon, value: hoursPerYear });
-    }
+  // A source that has moved is a failure, not an empty result. The previous
+  // version's bare `catch {}` is how 96 dead URLs became a green run.
+  if (failed > keys.length / 10) {
+    throw new Error(
+      `${failed} of ${keys.length} MENSQ archives failed to download — the Météo France source has probably moved`
+    );
   }
-  log(`  ${stations.length} stations with sunshine data`);
+  if (failed > 0) log(`  ${failed} of ${keys.length} archives could not be read`);
+
+  let year = 0;
+  let stations: SourcePoint[] = [];
+  for (const candidate of [...byYear.keys()].sort((a, b) => b - a)) {
+    const complete = [...byYear.get(candidate)!.entries()].filter(([, s]) => s.months === 12);
+    if (complete.length < 50) continue;
+    year = candidate;
+    stations = complete.map(([id, s]) => ({
+      id,
+      lat: s.lat,
+      lon: s.lon,
+      // INST is the month's insolation in minutes; twelve of them make the year.
+      value: Math.round(s.minutes / 60),
+    }));
+    break;
+  }
+
+  if (stations.length === 0) {
+    throw new Error('No year with twelve complete months of INST in the MENSQ archives');
+  }
+  log(`  ${stations.length} stations with a complete ${year} insolation record`);
+  const source = `Météo France — données climatologiques mensuelles, ${stations.length} postes héliographiques (${year})`;
 
   log('Step 3: Mapping communes to nearest station...');
   const centroids = await getCommuneCentroids(log);
-  const values = mapToNearestStation(centroids, stations, validCodes);
-  log(`  Mapped ${values.size} communes`);
+  const mapping = mapToNearestSource(centroids, stations, validCodes, SUNSHINE_MAX_KM);
+  logResolution(log, mapping);
 
   log('Step 4: Calculating scores and ranks...');
-  const records = buildRecords(values, CRITERION_ID, SOURCE, HIGHER_IS_BETTER, log);
+  const records = buildRecords(mapping.values, CRITERION_ID, source, HIGHER_IS_BETTER, log);
 
   log('Step 5: Upserting to database...');
   const result = await upsertCriterionValues(records);
   log(`  Inserted: ${result.inserted}, Errors: ${result.errors}`);
 
-  return { inserted: result.inserted, errors: result.errors, communes: values.size };
+  return { inserted: result.inserted, errors: result.errors, communes: mapping.values.size };
 }
 
 // ═══════════════════════════════════════════════════════════════
