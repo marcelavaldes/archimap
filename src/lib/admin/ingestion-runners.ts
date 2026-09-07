@@ -1082,75 +1082,365 @@ async function ingestInternetSpeed(log: LogFn): Promise<IngestionResult> {
 
 // --- Property Prices ---
 
+/**
+ * DVF — "Demandes de valeurs foncières" — is DGFiP's open register of every
+ * property transaction passed before a notaire, republished by Etalab in a
+ * geocoded CSV form. This criterion used to read it through api.cquest.org one
+ * commune at a time: 34,969 HTTP requests, which is why it shipped with its own
+ * "will take a long time" warning and why it had never once produced a row.
+ * Etalab publishes the same register in bulk, and that is what we read now:
+ *
+ *   https://files.data.gouv.fr/geo-dvf/latest/csv/<year>/departements/<dept>.csv.gz
+ *
+ * ~97 gzipped files per year, 1-3 MB each, so a three-year national pull is
+ * under 300 requests and about a minute of wall clock instead of 35k requests
+ * that never finished.
+ *
+ * WHY PER-DÉPARTEMENT AND NOT THE SIBLING `<year>/full.csv.gz`. One request per
+ * year is tempting, but full.csv.gz is ~95 MB gzipped and close to a gigabyte
+ * of text once inflated. downloadGzipped() — like any gunzipSync().toString() —
+ * has to materialise that as a single JavaScript string, which is at or past the
+ * engine's maximum string length and would sit in memory whole either way. The
+ * département files inflate to 10-30 MB, are folded into per-commune samples
+ * immediately and then dropped, so peak memory stays flat however many years we
+ * ask for.
+ *
+ * WHY THREE YEARS AND NOT ONE. A single year leaves thousands of small communes
+ * with one or two sales. Measured on the Loire (dept 42): one year prices 254 of
+ * its 320 communes, three years price 307. Three years is also the usual window
+ * for commune-level €/m² indicators, and it is what makes the national reference
+ * population large enough for the percentile scoring to mean anything.
+ *
+ * KNOWN COVERAGE GAPS — expected, not bugs:
+ *   - Bas-Rhin (67), Haut-Rhin (68) and Moselle (57) keep the Alsace-Moselle
+ *     "livre foncier" land registry rather than the national fichier immobilier
+ *     and are excluded from DVF by law. That is ~1,605 communes with no data
+ *     ever; the départements listing simply does not offer those three files.
+ *   - Mayotte (976) is likewise outside DVF.
+ *   - Communes under MIN_TRANSACTIONS qualifying sales in the window are left
+ *     out rather than handed a "median" of one sale.
+ * Together that puts the national population near 28-29k of France's 34,969
+ * communes — about 86% of the ~33,300 DVF covers at all. A run reporting 34,969
+ * here would be the suspicious one.
+ */
+
+const DVF_BASE_URL = 'https://files.data.gouv.fr/geo-dvf/latest/csv';
+
+/** Data-sanity band, not a market judgement: real communes span ~400-12,000 €/m². */
+const DVF_MIN_PRICE_PER_SQM = 100;
+const DVF_MAX_PRICE_PER_SQM = 20000;
+
+/**
+ * DVF books Paris, Lyon and Marseille by arrondissement (75101-75120,
+ * 69381-69389, 13201-13216). The communes table follows INSEE's official commune
+ * list, which knows only the parent commune (75056, 69123, 13055), so without
+ * this fold the three largest cities in France would silently end up with no
+ * price at all — a gap that reads as a rendering bug on the map rather than as a
+ * join that never matched. Corsican codes (2A004, 2B033…) coerce to NaN and fall
+ * through untouched, which is the intended behaviour.
+ */
+function dvfParentCommune(code: string): string {
+  const n = Number(code);
+  if (n >= 75101 && n <= 75120) return '75056';
+  if (n >= 69381 && n <= 69389) return '69123';
+  if (n >= 13201 && n <= 13216) return '13055';
+  return code;
+}
+
+/**
+ * The most recent published years of the geo-dvf export, newest first, read from
+ * the directory listing so the window rolls forward on its own — DVF gains a
+ * year folder each April. The computed fallback keeps the ingest alive if that
+ * listing's markup ever changes, at the cost of possibly asking for a year that
+ * does not exist yet (which then fails harmlessly, one year at a time).
+ */
+async function latestDvfYears(count: number, log: LogFn): Promise<string[]> {
+  try {
+    const res = await fetchWithRetry(`${DVF_BASE_URL}/`);
+    const html = await res.text();
+    const listed = [...new Set(Array.from(html.matchAll(/\/csv\/(\d{4})\//g), (m) => m[1]))]
+      .sort()
+      .reverse()
+      .slice(0, count);
+    if (listed.length === count) return listed;
+    log(`  Listing offered only ${listed.length} year(s); computing the window instead`);
+  } catch (e) {
+    log(`  Could not read the year listing (${e instanceof Error ? e.message : e}); computing the window instead`);
+  }
+  // From April onwards the previous calendar year is the newest complete one.
+  const newest = new Date().getFullYear() - 1;
+  return Array.from({ length: count }, (_, i) => String(newest - i));
+}
+
+/**
+ * Which département files a given year actually publishes. Asking the listing
+ * rather than generating 01..95 ourselves is the difference between *learning*
+ * that Alsace-Moselle is absent and 404ing on the same three files forever —
+ * this file already has one runner that 404s on all 96 of its downloads.
+ */
+async function dvfDepartements(year: string, log: LogFn): Promise<string[]> {
+  const res = await fetchWithRetry(`${DVF_BASE_URL}/${year}/departements/`);
+  const html = await res.text();
+  const depts = [...new Set(Array.from(html.matchAll(/\/(\d{2,3}|2A|2B)\.csv\.gz/g), (m) => m[1]))];
+  if (depts.length < 80) {
+    throw new Error(`only ${depts.length} département files listed — the export layout has probably changed`);
+  }
+  log(`  ${year}: ${depts.length} département files published`);
+  return depts;
+}
+
+interface DvfMutation {
+  communeCode: string;
+  valeurFonciere: number;
+  dwellingSurface: number;
+  dwellingCount: number;
+  hasNonDwellingLocal: boolean;
+  spansCommunes: boolean;
+}
+
+interface DvfStats {
+  rows: number;
+  mutations: number;
+  kept: number;
+  rejectedMultiCommune: number;
+  rejectedMixedUse: number;
+  rejectedNotSingleDwelling: number;
+  rejectedOutOfBand: number;
+  malformedRows: number;
+}
+
+/**
+ * Fold one département-year CSV into per-commune €/m² samples.
+ *
+ * THE TRAP THIS AVOIDS. A DVF row is one parcel/lot line, not one sale, and
+ * `valeur_fonciere` is the price of the WHOLE sale repeated on every row of it.
+ * A flat sold with a cellar and a garage is three rows all carrying the same
+ * price. Dividing a row's valeur_fonciere by that row's surface — exactly what
+ * the old per-commune implementation did — therefore counted one price three
+ * times, and on a two-lot sale doubled the €/m². Everything below is grouped by
+ * `id_mutation` first and only then turned into a price.
+ *
+ * What survives the filter, and why:
+ *   - nature_mutation = 'Vente'. Excludes VEFA (off-plan new builds, a different
+ *     market), échanges, adjudications and bare building land.
+ *   - Exactly one Appartement or Maison in the sale. A €/m² only means something
+ *     for a single home; an apartment block sold in one go is a wholesale price
+ *     and pulls a commune's median down by hundreds of euros. Measured on the
+ *     Loire, allowing multi-dwelling sales moves the median from 1,577 to 1,317.
+ *   - No commercial or industrial local in the sale, because a mixed lot cannot
+ *     be split into its residential share.
+ *   - The whole sale inside one commune, since we attribute it to one.
+ *   - "Dépendance" rows (garages, cellars) ride along and are tolerated: they
+ *     carry no surface_reelle_bati of their own.
+ *   - €/m² inside the sanity band, which drops symbolic 1 € family transfers and
+ *     misplaced-decimal entry errors at both ends (~0.3% of sales).
+ */
+function accumulateDvfPrices(csv: string, out: Map<string, number[]>, stats: DvfStats): void {
+  const lines = csv.split('\n');
+  if (lines.length < 2) return;
+
+  const header = lines[0].trim().split(',');
+  const iMutation = header.indexOf('id_mutation');
+  const iNature = header.indexOf('nature_mutation');
+  const iValue = header.indexOf('valeur_fonciere');
+  const iCommune = header.indexOf('code_commune');
+  const iType = header.indexOf('type_local');
+  const iSurface = header.indexOf('surface_reelle_bati');
+  if (iMutation < 0 || iNature < 0 || iValue < 0 || iCommune < 0 || iType < 0 || iSurface < 0) {
+    throw new Error(`DVF CSV is missing expected columns (header starts: ${header.slice(0, 6).join(', ')})`);
+  }
+
+  // Scoped to this one file on purpose. A sale does not span two départements in
+  // practice, and holding every mutation in France at once is what makes a
+  // national pass run out of memory — 3.65M of them across three years.
+  const mutations = new Map<string, DvfMutation>();
+
+  for (let i = 1; i < lines.length; i++) {
+    const line = lines[i];
+    if (!line) continue;
+    stats.rows++;
+
+    // The export escapes nothing — commas inside values are substituted at
+    // source, which is why the label "Local industriel. commercial ou assimilé"
+    // carries a full stop where French writes a comma — so a plain split is
+    // correct. The field count is still checked, so a future change to that
+    // shows up as skipped rows rather than as silently shifted columns.
+    const cols = line.split(',');
+    if (cols.length !== header.length) {
+      stats.malformedRows++;
+      continue;
+    }
+    if (cols[iNature] !== 'Vente') continue;
+
+    const communeCode = cols[iCommune];
+    const valeurFonciere = Number(cols[iValue]);
+    if (!communeCode || !(valeurFonciere > 0)) continue;
+
+    const id = cols[iMutation];
+    let mutation = mutations.get(id);
+    if (!mutation) {
+      mutation = {
+        communeCode,
+        valeurFonciere,
+        dwellingSurface: 0,
+        dwellingCount: 0,
+        hasNonDwellingLocal: false,
+        spansCommunes: false,
+      };
+      mutations.set(id, mutation);
+    }
+    if (mutation.communeCode !== communeCode) mutation.spansCommunes = true;
+
+    const type = cols[iType];
+    if (type === 'Appartement' || type === 'Maison') {
+      const surface = Number(cols[iSurface]);
+      if (surface > 0) {
+        mutation.dwellingSurface += surface;
+        mutation.dwellingCount++;
+      }
+    } else if (type && type !== 'Dépendance') {
+      mutation.hasNonDwellingLocal = true;
+    }
+  }
+
+  for (const mutation of mutations.values()) {
+    stats.mutations++;
+    if (mutation.spansCommunes) {
+      stats.rejectedMultiCommune++;
+      continue;
+    }
+    if (mutation.hasNonDwellingLocal) {
+      stats.rejectedMixedUse++;
+      continue;
+    }
+    if (mutation.dwellingCount !== 1 || mutation.dwellingSurface <= 0) {
+      stats.rejectedNotSingleDwelling++;
+      continue;
+    }
+
+    const pricePerSqm = mutation.valeurFonciere / mutation.dwellingSurface;
+    if (pricePerSqm < DVF_MIN_PRICE_PER_SQM || pricePerSqm > DVF_MAX_PRICE_PER_SQM) {
+      stats.rejectedOutOfBand++;
+      continue;
+    }
+
+    stats.kept++;
+    const code = dvfParentCommune(mutation.communeCode);
+    const samples = out.get(code);
+    if (samples) samples.push(pricePerSqm);
+    else out.set(code, [pricePerSqm]);
+  }
+}
+
+/** Median of a sample list, without disturbing the caller's array. */
+function medianOf(values: number[]): number {
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid];
+}
+
 async function ingestPropertyPrice(log: LogFn): Promise<IngestionResult> {
   const CRITERION_ID = 'propertyPrice';
-  const SOURCE = 'DVF - data.gouv.fr';
+  const SOURCE = 'DVF - data.gouv.fr (geo-dvf bulk export)';
   const HIGHER_IS_BETTER = false;
-  const BASE_URL = 'http://api.cquest.org/dvf';
+  const YEARS_OF_HISTORY = 3;
+  /** A median over fewer sales than this is one transaction wearing a disguise. */
+  const MIN_TRANSACTIONS = 3;
+  const DOWNLOAD_CONCURRENCY = 8;
 
   log('Step 1: Fetching commune codes...');
-  const communeCodes = Array.from(await getCommuneCodes()).sort();
-  log(`  ${communeCodes.length} communes in database`);
+  const validCodes = await getCommuneCodes();
+  log(`  ${validCodes.size} communes in database`);
 
-  log('Step 2: Fetching property prices from DVF API...');
-  log('  WARNING: This fetches per-commune and will take a long time');
+  log('Step 2: Resolving the DVF bulk export...');
+  const years = await latestDvfYears(YEARS_OF_HISTORY, log);
+  log(`  Years: ${years.join(', ')}`);
 
-  const prices = new Map<string, number>();
-  let processed = 0;
-  let withData = 0;
-  let errors = 0;
+  log('Step 3: Downloading département files...');
+  const samples = new Map<string, number[]>();
+  const stats: DvfStats = {
+    rows: 0,
+    mutations: 0,
+    kept: 0,
+    rejectedMultiCommune: 0,
+    rejectedMixedUse: 0,
+    rejectedNotSingleDwelling: 0,
+    rejectedOutOfBand: 0,
+    malformedRows: 0,
+  };
+  let downloaded = 0;
+  let failed = 0;
 
-  for (const code of communeCodes) {
+  for (const year of years) {
+    let depts: string[];
     try {
-      const response = await fetchWithRetry(`${BASE_URL}?code_commune=${code}`);
-      const text = await response.text();
+      depts = await dvfDepartements(year, log);
+    } catch (e) {
+      // One year missing is survivable — the others still give a national
+      // population. All of them missing is not, and the guard below catches it.
+      log(`  ${year}: skipped (${e instanceof Error ? e.message : e})`);
+      continue;
+    }
 
-      if (text && text.trim() !== '' && text !== '[]') {
-        let transactions;
-        try {
-          const parsed = JSON.parse(text);
-          transactions = parsed.resultats || parsed;
-        } catch {
-          transactions = [];
-        }
-
-        if (Array.isArray(transactions) && transactions.length > 0) {
-          const valid = transactions.filter(
-            (t: { valeur_fonciere: number; surface_reelle_bati: number | null; type_local: string | null }) =>
-              t.valeur_fonciere > 0 && t.surface_reelle_bati && t.surface_reelle_bati > 0 &&
-              (t.type_local === 'Appartement' || t.type_local === 'Maison')
-          );
-
-          if (valid.length >= 3) {
-            const perSqm = valid
-              .map((t: { valeur_fonciere: number; surface_reelle_bati: number }) => t.valeur_fonciere / t.surface_reelle_bati)
-              .sort((a: number, b: number) => a - b);
-            const mid = Math.floor(perSqm.length / 2);
-            const median = perSqm.length % 2 === 0 ? (perSqm[mid - 1] + perSqm[mid]) / 2 : perSqm[mid];
-            prices.set(code, Math.round(median));
-            withData++;
+    for (let i = 0; i < depts.length; i += DOWNLOAD_CONCURRENCY) {
+      const batch = depts.slice(i, i + DOWNLOAD_CONCURRENCY);
+      await Promise.all(
+        batch.map(async (dept) => {
+          try {
+            const csv = await downloadGzipped(`${DVF_BASE_URL}/${year}/departements/${dept}.csv.gz`);
+            // Folded here rather than after the Promise.all so each 10-30 MB
+            // string is collectable the moment its file is reduced. The fold is
+            // fully synchronous, so the shared Map is never touched by two
+            // callbacks at once.
+            accumulateDvfPrices(csv, samples, stats);
+            downloaded++;
+          } catch {
+            failed++;
           }
-        }
-      }
-    } catch {
-      errors++;
+        })
+      );
     }
-
-    processed++;
-    if (processed % 100 === 0 || processed === communeCodes.length) {
-      const pct = Math.round((processed / communeCodes.length) * 100);
-      log(`  Progress: ${processed}/${communeCodes.length} (${pct}%) — ${withData} with prices, ${errors} errors`);
-    }
-
-    await sleep(150);
+    log(`  ${year}: ${downloaded} files read, ${failed} failed, ${stats.kept} usable sales so far`);
   }
+
+  if (stats.kept === 0) {
+    throw new Error('DVF bulk export yielded no usable transactions — the URL or CSV layout has changed');
+  }
+  log(`  ${stats.rows} rows -> ${stats.mutations} sales -> ${stats.kept} single-dwelling sales`);
+  log(
+    `  Rejected: ${stats.rejectedNotSingleDwelling} not a single dwelling, ${stats.rejectedMixedUse} mixed-use, ` +
+      `${stats.rejectedMultiCommune} spanning communes, ${stats.rejectedOutOfBand} outside the €/m² band, ` +
+      `${stats.malformedRows} malformed rows`
+  );
+
+  log('Step 4: Taking a median €/m² per commune...');
+  const prices = new Map<string, number>();
+  let thinSamples = 0;
+  let unknownCodes = 0;
+  for (const [code, values] of samples) {
+    if (values.length < MIN_TRANSACTIONS) {
+      thinSamples++;
+      continue;
+    }
+    // DVF still carries codes for communes that have since merged or been
+    // renumbered. They are dropped, not guessed at.
+    if (!validCodes.has(code)) {
+      unknownCodes++;
+      continue;
+    }
+    prices.set(code, Math.round(medianOf(values)));
+  }
+  log(
+    `  ${prices.size} communes priced (${thinSamples} under ${MIN_TRANSACTIONS} sales, ` +
+      `${unknownCodes} codes absent from the communes table)`
+  );
 
   if (prices.size === 0) throw new Error('No price data found');
 
-  log('Step 3: Calculating scores and ranks...');
+  log('Step 5: Calculating scores and ranks...');
   const records = buildRecords(prices, CRITERION_ID, SOURCE, HIGHER_IS_BETTER, log);
 
-  log('Step 4: Upserting to database...');
+  log('Step 6: Upserting to database...');
   const result = await upsertCriterionValues(records);
   log(`  Inserted: ${result.inserted}, Errors: ${result.errors}`);
 
