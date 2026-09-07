@@ -20,7 +20,7 @@
  *   bun run scripts/fixture/capture-real.ts --dept 42   # once, slow, network
  *   bun run fixture:build
  */
-import { mkdir, writeFile, readFile, readdir } from 'node:fs/promises';
+import { mkdir, writeFile, readFile, readdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { DEMO_REGION } from '../../src/lib/map/region';
 
@@ -189,6 +189,23 @@ async function loadCaptures(): Promise<Map<string, RawCapture>> {
 async function main() {
   await mkdir(join(OUT, 'geo'), { recursive: true });
 
+  // Drop geometry for départements the region config no longer includes.
+  // Without this, narrowing the demo scope leaves the previous scope's files
+  // behind — 25 MB of Occitanie sitting next to 2 MB of Loire, still served,
+  // and silently shipped to a deploy that has no use for them.
+  try {
+    const stale = (await readdir(join(OUT, 'geo'))).filter((f) => {
+      const m = f.match(/^communes-(\w+)\.geojson$/);
+      return m && !DEMO_REGION.departements.includes(m[1]);
+    });
+    for (const f of stale) {
+      await rm(join(OUT, 'geo', f));
+      console.log(`  pruned stale ${f}`);
+    }
+  } catch {
+    /* first run — nothing to prune */
+  }
+
   const allCriteria = await parseCriteriaFromSeed();
   console.log(`Parsed ${allCriteria.length} criteria from the seed migration.`);
 
@@ -279,19 +296,33 @@ async function main() {
     }
 
     // The criterion's real source wins over the seed migration's placeholder.
+    // How many genuinely different scores this criterion resolves inside the
+    // demo région. A source can be real, complete and still nearly useless at
+    // this zoom: SYNOP has 60 weather stations for all of France, so every
+    // commune in a département maps to two or three of them and the map paints
+    // flat blobs. Recording it lets the UI say so instead of implying
+    // per-commune precision the data does not have.
+    const distinctScores = new Set(
+      capture.records.filter((r) => communeMeta.has(r.commune_code)).map((r) => r.score)
+    ).size;
+
     shipped.push({ ...criterion, source: capture.source ?? criterion.source, lastUpdated: capture.sourceDate ?? criterion.lastUpdated });
     provenance[criterion.id] = {
       status: 'real',
       source: capture.source,
       sourceDate: capture.sourceDate,
       communes: inRegion,
+      distinctScores,
       coverage: Number((inRegion / communeMeta.size).toFixed(3)),
       // Scores are national percentiles: values were fetched and scored across
       // all of France, then filtered here. A score of 30 means 30th percentile
       // nationally, not within the demo région.
       scoredAgainst: capture.nationalCount,
     };
-    console.log(`  ${criterion.id}: ${inRegion}/${communeMeta.size} communes (${capture.source})`);
+    console.log(
+      `  ${criterion.id}: ${inRegion}/${communeMeta.size} communes, ${distinctScores} distinct scores (${capture.source})` +
+        (distinctScores < 10 ? '  ← coarse' : '')
+    );
   }
 
   if (shipped.length === 0) {

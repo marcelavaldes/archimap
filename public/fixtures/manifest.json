@@ -1,0 +1,102 @@
+{
+  "generatedAt": "2026-09-07T08:24:53.382Z",
+  "region": {
+    "departements": [
+      "42"
+    ],
+    "label": "Loire (42)",
+    "center": [
+      4.15,
+      45.72
+    ],
+    "zoom": 8.6
+  },
+  "communeCount": 320,
+  "criteriaShipped": [
+    "temperature",
+    "rainfall",
+    "publicTransport",
+    "employmentRate"
+  ],
+  "criteriaOmitted": [
+    "sunshine",
+    "propertyPrice",
+    "localTax",
+    "hospitalAccess",
+    "internetSpeed",
+    "crimeRate",
+    "culturalVenues",
+    "medianIncome"
+  ],
+  "provenance": {
+    "temperature": {
+      "status": "real",
+      "source": "Météo France (SYNOP)",
+      "sourceDate": "2026-09-07",
+      "communes": 320,
+      "distinctScores": 3,
+      "coverage": 1,
+      "scoredAgainst": 34969
+    },
+    "sunshine": {
+      "status": "no-data",
+      "reason": "capture missing, empty, or degenerate"
+    },
+    "rainfall": {
+      "status": "real",
+      "source": "Météo France (SYNOP)",
+      "sourceDate": "2026-09-07",
+      "communes": 320,
+      "distinctScores": 3,
+      "coverage": 1,
+      "scoredAgainst": 34969
+    },
+    "propertyPrice": {
+      "status": "no-data",
+      "reason": "capture missing, empty, or degenerate"
+    },
+    "localTax": {
+      "status": "no-data",
+      "reason": "capture missing, empty, or degenerate"
+    },
+    "hospitalAccess": {
+      "status": "no-data",
+      "reason": "capture missing, empty, or degenerate"
+    },
+    "publicTransport": {
+      "status": "real",
+      "source": "transport.data.gouv.fr",
+      "sourceDate": "2026-09-07",
+      "communes": 320,
+      "distinctScores": 4,
+      "coverage": 1,
+      "scoredAgainst": 34969
+    },
+    "internetSpeed": {
+      "status": "no-data",
+      "reason": "capture missing, empty, or degenerate"
+    },
+    "crimeRate": {
+      "status": "no-data",
+      "reason": "capture missing, empty, or degenerate"
+    },
+    "culturalVenues": {
+      "status": "no-data",
+      "reason": "capture missing, empty, or degenerate"
+    },
+    "employmentRate": {
+      "status": "real",
+      "source": "INSEE - Recensement de la Population",
+      "sourceDate": "2026-09-07",
+      "communes": 320,
+      "distinctScores": 72,
+      "coverage": 1,
+      "scoredAgainst": 34840
+    },
+    "medianIncome": {
+      "status": "no-data",
+      "reason": "capture missing, empty, or degenerate"
+    }
+  },
+  "note": "Real open data. Scores are national percentiles; rows filtered to the demo région."
+}

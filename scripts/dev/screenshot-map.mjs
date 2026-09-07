@@ -133,7 +133,7 @@ if (SCENARIO === 'single' || SCENARIO === 'all') {
 if (SCENARIO === 'composite' || SCENARIO === 'all') {
   console.log('weighted composite mode');
   // Deep-link straight into a weighting to prove URL round-tripping works.
-  await page.goto(`${BASE}/map?mode=composite&w=temperature:5,propertyPrice:1`, {
+  await page.goto(`${BASE}/map?mode=composite&w=temperature:5,employmentRate:1`, {
     waitUntil: 'networkidle',
     timeout: 120000,
   });
@@ -145,19 +145,16 @@ if (SCENARIO === 'composite' || SCENARIO === 'all') {
   // Categories render expanded, so the sliders are already reachable — do not
   // click the category headers, which would collapse them.
   await page.getByLabel('Poids de Température moyenne').fill('1');
-  await page.getByLabel('Poids de Prix immobilier').fill('5');
+  await page.getByLabel("Poids de Taux d'emploi").fill('5');
   await page.waitForTimeout(3000);
-  await shot('composite-02-cost-heavy');
+  await shot('composite-02-employment-heavy');
   console.log('  url after slider drag:', page.url());
 
-  // Weight every criterion equally — the "balanced" view, and the one that
-  // exercises the missing-data renormalisation hardest.
-  for (const name of ['Heures d\'ensoleillement', 'Précipitations', 'Taxe foncière',
-                      'Accès hôpital', 'Transport en commun', 'Débit internet']) {
-    await page.getByLabel(`Poids de ${name}`).fill('3');
-  }
-  await page.getByLabel('Poids de Température moyenne').fill('3');
-  await page.getByLabel('Poids de Prix immobilier').fill('3');
+  // Weight every rendered slider equally — the "balanced" view, and the one
+  // that exercises missing-data renormalisation hardest. Driven off the DOM
+  // rather than a hardcoded list, so it tracks whatever the fixture shipped.
+  const sliders = await page.getByRole('slider').all();
+  for (const s of sliders) await s.fill('3');
   await page.waitForTimeout(3000);
   await shot('composite-03-balanced');
 }

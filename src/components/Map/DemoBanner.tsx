@@ -23,6 +23,7 @@ interface Provenance {
   source?: string;
   sourceDate?: string;
   communes?: number;
+  distinctScores?: number;
   coverage?: number;
   reason?: string;
   scoredAgainst?: number;
@@ -95,7 +96,8 @@ export function DemoBanner() {
               <tr className="text-[10px] uppercase tracking-wide text-gray-500">
                 <th className="pb-1 font-medium">Critère</th>
                 <th className="pb-1 font-medium">Source</th>
-                <th className="pb-1 font-medium text-right">Couverture</th>
+                <th className="pb-1 font-medium text-right">Communes</th>
+                <th className="pb-1 font-medium text-right">Nuances</th>
               </tr>
             </thead>
             <tbody className="align-top">
@@ -103,8 +105,23 @@ export function DemoBanner() {
                 <tr key={id} className="border-t border-gray-100">
                   <td className="py-1 pr-2 whitespace-nowrap">{id}</td>
                   <td className="py-1 pr-2 text-gray-600">{p.source}</td>
-                  <td className="py-1 text-right tabular-nums text-gray-600">
+                  <td className="py-1 pr-2 text-right tabular-nums text-gray-600">
                     {p.communes}/{manifest.communeCount}
+                  </td>
+                  {/* Distinct scores across the région: a low number means the
+                      source cannot actually distinguish neighbouring communes,
+                      however complete its coverage looks. */}
+                  <td
+                    className={`py-1 text-right tabular-nums ${
+                      (p.distinctScores ?? 0) < 10 ? 'text-amber-700 font-medium' : 'text-gray-600'
+                    }`}
+                    title={
+                      (p.distinctScores ?? 0) < 10
+                        ? 'Résolution grossière : la source ne distingue que quelques niveaux sur tout le département'
+                        : undefined
+                    }
+                  >
+                    {p.distinctScores}
                   </td>
                 </tr>
               ))}
