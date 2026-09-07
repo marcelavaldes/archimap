@@ -18,7 +18,7 @@ export const runtime = 'nodejs';
  *
  * It also reports whether fixture mode is on, which is the only way the client
  * can know — the flag is server-side, and the panel must say out loud when its
- * numbers are synthetic and its writes go nowhere.
+ * numbers come from the fixture and its writes go nowhere.
  */
 export async function GET(request: NextRequest) {
   const authError = await verifyAdmin(request);

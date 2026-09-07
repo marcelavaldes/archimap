@@ -6,7 +6,7 @@ import { usePathname } from 'next/navigation';
 
 interface AdminContextType {
   authenticated: boolean;
-  /** True when the panel is reading synthetic fixture data instead of a database. */
+  /** True when the panel is reading fixture files instead of a database. */
   fixture: boolean;
 }
 
@@ -179,10 +179,11 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
         {/* Main content */}
         <main className="flex-1 p-6 overflow-auto">
           {/*
-            A standing banner, not a toast. Every number below it is synthetic
-            and every write below it is discarded, and that has to be true on
-            screen for as long as it is true of the data — a notice that fades
-            after three seconds is a notice the next person to look does not see.
+            A standing banner, not a toast. Every number below it comes from a
+            fixture covering one département rather than from a database, and
+            every write below it is discarded. That has to stay on screen for as
+            long as it is true of the data — a notice that fades after three
+            seconds is a notice the next person to look does not see.
           */}
           {fixture && (
             <div
@@ -193,8 +194,10 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
               <div className="text-sm text-amber-900">
                 <strong className="font-semibold">Mode fixture (ARCHIMAP_FIXTURE=1)</strong> — aucune
                 base de données n’est connectée. Les chiffres proviennent de{' '}
-                <code className="font-mono text-xs">public/fixtures/</code> et sont synthétiques ;
-                les modifications sont appliquées en mémoire et perdues au redémarrage.
+                <code className="font-mono text-xs">public/fixtures/</code> : ce sont de{' '}
+                <strong>vraies données publiques</strong> (INSEE, DVF, ARCEP, Météo France…)
+                capturées pour un seul département, et non des valeurs simulées. Les
+                modifications sont appliquées en mémoire et perdues au redémarrage.
               </div>
             </div>
           )}

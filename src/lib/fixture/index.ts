@@ -47,7 +47,7 @@ export function isFixtureMode(): boolean {
  * even if ARCHIMAP_FIXTURE somehow leaks into its environment, and falls back to
  * the existing "500, say which variable is missing" behaviour.
  *
- * Deliberately narrower than isFixtureMode(): serving synthetic geometry from a
+ * Deliberately narrower than isFixtureMode(): serving fixture geometry from a
  * production build is merely wrong, whereas accepting a published password there
  * would be a hole. Only the credential substitution needs the extra lock.
  */
